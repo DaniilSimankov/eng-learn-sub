@@ -2,6 +2,13 @@
 # Запуск: ./start.sh   или   docker compose up -d --build
 # Стоп:   docker compose down
 # Чистка модели: docker compose down -v
+#
+# Память: по умолчанию одна модель qwen2.5:3b (~2–2.5 GB).
+# Не держите 3b+7b вместе — в Docker Desktop на 8 GB это упирается в лимит.
+# Если RAM позволяет (≈10+ GB контейнеру), можно вернуть 7b для фраз:
+#   SUBLEARN_OLLAMA_MODEL=qwen2.5:7b
+#   SUBLEARN_OLLAMA_WORD_MODEL=qwen2.5:3b
+#   OLLAMA_MAX_LOADED_MODELS=1   # всё равно по одной в RAM
 
 services:
   sublearn:
@@ -18,11 +25,19 @@ services:
       - ./ad-skip.js:/app/ad-skip.js
     environment:
       SUBLEARN_OLLAMA_URL: http://127.0.0.1:11434
-      SUBLEARN_OLLAMA_MODEL: qwen2.5:7b
+      # Одна модель = меньше RAM/CPU. Глоссарий + промпты тянут качество.
+      SUBLEARN_OLLAMA_MODEL: qwen2.5:3b
+      SUBLEARN_OLLAMA_WORD_MODEL: qwen2.5:3b
+      SUBLEARN_OLLAMA_NUM_THREAD: "4"
       SUBLEARN_HOST: 0.0.0.0
       SUBLEARN_PORT: "8765"
       SUBLEARN_DATA_DIR: /app/data
       OLLAMA_HOST: 127.0.0.1:11434
+      OLLAMA_MAX_LOADED_MODELS: "1"
+      OLLAMA_NUM_PARALLEL: "1"
+      OLLAMA_KEEP_ALIVE: "10m"
+    mem_limit: 4g
+    cpus: "4.0"
     restart: unless-stopped
 
 volumes:

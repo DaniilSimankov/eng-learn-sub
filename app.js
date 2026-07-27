@@ -318,9 +318,13 @@ async function refreshAiStatus() {
       aiStatusEl.title = data.error || `Скачивается ${data.model}`;
       return;
     }
-    aiStatusEl.textContent = data.model || 'ok';
+    aiStatusEl.textContent = data.wordModel && data.wordModel !== data.model
+      ? `${data.wordModel} / ${data.model}`
+      : (data.model || 'ok');
     aiStatusEl.classList.add('is-ok');
-    aiStatusEl.title = `Локальная модель готова: ${data.model}`;
+    aiStatusEl.title = data.wordModel && data.wordModel !== data.model
+      ? `Слова: ${data.wordModel} · фразы: ${data.model}`
+      : `Локальная модель готова: ${data.model}`;
   } catch {
     aiStatusEl.textContent = 'нет связи';
     aiStatusEl.classList.remove('is-ok', 'is-warn');
@@ -2104,7 +2108,7 @@ async function translateWord(word, sentence = '') {
     return clean;
   }
   const ctx = sentence || state.lastPopupWord?.sentence || '';
-  const key = `word:v6:${clean.toLowerCase()}:${ctx}`;
+  const key = `word:v7:${clean.toLowerCase()}:${ctx}`;
   if (state.translationCache.has(key)) return state.translationCache.get(key);
   if (state.translationInflight.has(key)) return state.translationInflight.get(key);
 

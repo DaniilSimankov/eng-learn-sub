@@ -732,8 +732,14 @@ def proxy_stream(url: str) -> Tuple[bytes, str]:
 
 
 OLLAMA_URL = os.environ.get("SUBLEARN_OLLAMA_URL", "http://127.0.0.1:11434").rstrip("/")
-# Qwen2.5 7B заметно лучше на идиомах/мате; в Docker на Mac (без Metal) медленнее 3B
-OLLAMA_MODEL = os.environ.get("SUBLEARN_OLLAMA_MODEL", "qwen2.5:7b")
+# По умолчанию одна 3B: в Docker на Mac без Metal 3B+7B съедают ~7 GB и CPU.
+OLLAMA_MODEL = os.environ.get("SUBLEARN_OLLAMA_MODEL", "qwen2.5:3b")
+OLLAMA_WORD_MODEL = os.environ.get("SUBLEARN_OLLAMA_WORD_MODEL") or OLLAMA_MODEL
+OLLAMA_KEEP_ALIVE = os.environ.get("OLLAMA_KEEP_ALIVE", "10m")
+try:
+    OLLAMA_NUM_THREAD = max(1, int(os.environ.get("SUBLEARN_OLLAMA_NUM_THREAD", "4")))
+except ValueError:
+    OLLAMA_NUM_THREAD = 4
 
 
 def init_vocab_db() -> None:
@@ -915,6 +921,15 @@ def _ollama_request(path: str, payload: Optional[dict] = None, timeout: int = 60
         return json.loads(resp.read().decode("utf-8"))
 
 
+def _model_ready(names: list, model: str) -> bool:
+    return any(
+        name == model
+        or name.startswith(f"{model}-")
+        or name.startswith(f"{model}:")
+        for name in names
+    ) or model in names
+
+
 def ollama_status() -> dict:
     try:
         tags = _ollama_request("/api/tags", timeout=5)
@@ -923,6 +938,7 @@ def ollama_status() -> dict:
             "ok": False,
             "ready": False,
             "model": OLLAMA_MODEL,
+            "wordModel": OLLAMA_WORD_MODEL,
             "error": f"Ollama недоступна: {exc.reason}. Запустите ./start.sh",
         }
     except Exception as exc:  # noqa: BLE001
@@ -930,6 +946,7 @@ def ollama_status() -> dict:
             "ok": False,
             "ready": False,
             "model": OLLAMA_MODEL,
+            "wordModel": OLLAMA_WORD_MODEL,
             "error": str(exc),
         }
 
@@ -938,19 +955,22 @@ def ollama_status() -> dict:
         name = item.get("name") or item.get("model") or ""
         if name:
             names.append(name)
-    has_model = any(
-        name == OLLAMA_MODEL
-        or name.startswith(f"{OLLAMA_MODEL}-")
-        or name.startswith(f"{OLLAMA_MODEL}:")
-        for name in names
-    ) or OLLAMA_MODEL in names
+    has_line = _model_ready(names, OLLAMA_MODEL)
+    has_word = _model_ready(names, OLLAMA_WORD_MODEL)
+    ready = has_line and has_word
+    missing = []
+    if not has_line:
+        missing.append(OLLAMA_MODEL)
+    if not has_word and OLLAMA_WORD_MODEL != OLLAMA_MODEL:
+        missing.append(OLLAMA_WORD_MODEL)
 
     return {
         "ok": True,
-        "ready": has_model,
+        "ready": ready,
         "model": OLLAMA_MODEL,
+        "wordModel": OLLAMA_WORD_MODEL,
         "models": names,
-        "error": None if has_model else f"Модель {OLLAMA_MODEL} ещё не скачана (первый запуск контейнера)",
+        "error": None if ready else f"Модель ещё не скачана: {', '.join(missing)}",
     }
 
 
@@ -1009,9 +1029,25 @@ PHRASE_GLOSSARY = {
     "oh my fucking god": "ёбаный в рот",
 }
 
-# Односложные слова, которые 3B ломает рядом с матом.
+# Односложные слова, которые 3B ломает рядом с матом / частые клики без LLM.
 COMMON_WORD_GLOSSARY = {
     "shut": "закрыть; заткнуть",
+    "look": "смотреть; выглядеть",
+    "like": "как; нравиться; типа",
+    "get": "получить; стать",
+    "along": "вместе; вдоль",
+    "with": "с",
+    "would": "бы",
+    "thinking": "думать; мысль",
+    "myself": "себе; сам",
+    "somebody": "кто-то",
+    "someone": "кто-то",
+    "normally": "обычно",
+    "same": "тот же; такой же",
+    "direction": "направление",
+    "planet": "планета",
+    "earth": "земля; Земля",
+    "revolving": "вращающийся; вращаться",
 }
 
 # Артикли: 3B в контексте мата часто отвечает «фUCK» вместо значения артикля.
@@ -1145,10 +1181,8 @@ def _translate_cache_put(key: str, value: str) -> None:
 def _line_translate_messages(cleaned: str) -> list:
     system = (
         "Переведи реплику субтитров на естественный разговорный русский. "
-        "Сохраняй смысл и тон, не калькируй слово в слово. "
-        "Имена собственные (Rue, Earth и т.п.) оставляй как в оригинале или в привычной транскрипции. "
-        "Мат и грубости сохраняй без смягчения и цензуры. "
-        "Ответ — только перевод реплики, без кавычек и примечаний."
+        "Не калькируй слово в слово. Имена (Rue и т.п.) оставляй латиницей. "
+        "Мат без цензуры. Ответ — полный перевод фразы, без примечаний."
     )
     return [
         {"role": "system", "content": system},
@@ -1168,10 +1202,61 @@ def _line_translate_messages(cleaned: str) -> list:
             "role": "assistant",
             "content": "который обычно вращается не в ту же сторону, что планета Земля",
         },
-        {"role": "user", "content": "Shut the fuck up."},
-        {"role": "assistant", "content": "Заткнись нахуй."},
         {"role": "user", "content": cleaned},
     ]
+
+
+def _word_translate_messages(marked: str, target: str) -> list:
+    system = (
+        "Словарь EN→RU. Переведи только фрагмент в [[...]] на русский. "
+        "Одно слово или короткая глосса. Без латиницы (кроме имён)."
+    )
+    return [
+        {"role": "system", "content": system},
+        {
+            "role": "user",
+            "content": "Переведи только [[...]]:\n[[know]]\n\nФраза: know",
+        },
+        {"role": "assistant", "content": "знать"},
+        {
+            "role": "user",
+            "content": f"Переведи только [[...]]:\n{marked}\n\nФраза: {target}",
+        },
+    ]
+
+
+def _chat_translate(
+    messages: list,
+    *,
+    model: str,
+    num_predict: int,
+    temperature: float,
+    num_ctx: int,
+) -> str:
+    payload = {
+        "model": model,
+        "stream": False,
+        "keep_alive": OLLAMA_KEEP_ALIVE,
+        "options": {
+            "temperature": temperature,
+            "top_p": 0.8,
+            "num_predict": num_predict,
+            "num_ctx": num_ctx,
+            "num_thread": OLLAMA_NUM_THREAD,
+        },
+        "messages": messages,
+    }
+    try:
+        data = _ollama_request("/api/chat", payload, timeout=90)
+    except urllib.error.HTTPError as exc:
+        body = exc.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"Ollama HTTP {exc.code}: {body[:200]}") from exc
+
+    msg = (data.get("message") or {}).get("content") or ""
+    result = _clean_translation(msg)
+    if not result:
+        raise RuntimeError("Пустой ответ модели")
+    return result
 
 
 def ollama_translate(text: str, *, word: Optional[str] = None, sentence: Optional[str] = None) -> str:
@@ -1202,94 +1287,60 @@ def ollama_translate(text: str, *, word: Optional[str] = None, sentence: Optiona
             _translate_cache_put(cache_key, gloss)
             return gloss
 
-        if len(ctx) > 280:
-            ctx = ctx[:280].rsplit(" ", 1)[0]
-
-        marked = _mark_phrase_in_context(ctx, target) if ctx else f"[[{target}]]"
-
-        system = (
-            "Ты двуязычный словарь EN→RU для сериалов 18+. "
-            "Переведи ТОЛЬКО фрагмент между [[ и ]]. Остальное — контекст, не переводи его. "
-            "Если [[...]] — артикль/служебное слово (the, a, of…), дай краткое словарное значение, "
-            "не цепляйся к соседнему мату. "
-            "Мат, сленг и грубости переводи ПРЯМО и ТОЧНО (блять, хуй, сука, дерьмо и т.д.). "
-            "Запрещено: смягчать, цензурить, заменять на «блин/фиг», "
-            "выдумывать несуществующие слова, писать примечания. "
-            "Имена собственные можно оставить латиницей. "
-            "Ответ: одно русское слово или короткая словарная глосса."
+        # Без длинного контекста: prefill на CPU дешевле, меньше «заражения» матом.
+        marked = f"[[{target}]]"
+        result = _chat_translate(
+            _word_translate_messages(marked, target),
+            model=OLLAMA_WORD_MODEL,
+            num_predict=24,
+            temperature=0,
+            num_ctx=256,
         )
-        user = f"Переведи только [[...]]:\n{marked}\n\nФраза: {target}"
-        messages = [
-            {"role": "system", "content": system},
-            {
-                "role": "user",
-                "content": "Переведи только [[...]]:\nShut [[the]] fuck up.\n\nФраза: the",
-            },
-            {"role": "assistant", "content": "определённый артикль the"},
-            {
-                "role": "user",
-                "content": "Переведи только [[...]]:\nof course I'd [[fucking]] go.\n\nФраза: fucking",
-            },
-            {"role": "assistant", "content": "блять (усиление)"},
-            {
-                "role": "user",
-                "content": "Переведи только [[...]]:\nsomebody [[Rue]] would get along with\n\nФраза: Rue",
-            },
-            {"role": "assistant", "content": "Rue (имя)"},
-            {
-                "role": "user",
-                "content": "Переведи только [[...]]:\n[[Shut the fuck up]].\n\nФраза: Shut the fuck up",
-            },
-            {"role": "assistant", "content": "заткнись нахуй"},
-            {"role": "user", "content": user},
-        ]
-        num_predict = 48
-        temperature = 0
+        result = _normalize_word_gloss_case(result)
+        if _is_bad_word_translation(result, word_raw):
+            gloss = _glossary_lookup(word_raw, sentence)
+            if gloss:
+                _translate_cache_put(cache_key, gloss)
+                return gloss
+            # Быстрый повтор на 3B без few-shot — не гоняем тяжёлый 7B на одно слово.
+            retry = _chat_translate(
+                [
+                    {
+                        "role": "system",
+                        "content": "EN→RU dictionary gloss. Cyrillic only. One short answer.",
+                    },
+                    {"role": "user", "content": target},
+                ],
+                model=OLLAMA_WORD_MODEL,
+                num_predict=20,
+                temperature=0,
+                num_ctx=256,
+            )
+            retry = _normalize_word_gloss_case(retry)
+            if not _is_bad_word_translation(retry, word_raw):
+                result = retry
+            else:
+                # Совсем крайний случай — короткая фраза на 7B.
+                result = _chat_translate(
+                    _line_translate_messages(word_raw),
+                    model=OLLAMA_MODEL,
+                    num_predict=min(80, max(32, 12 + len(word_raw.split()) * 5)),
+                    temperature=0.1,
+                    num_ctx=1024,
+                )
     else:
         phrase_gloss = _glossary_lookup(cleaned)
         if phrase_gloss and " " in _normalize_phrase_key(cleaned):
             _translate_cache_put(cache_key, phrase_gloss)
             return phrase_gloss
 
-        messages = _line_translate_messages(cleaned)
-        # Длинным репликам нужно больше токенов, иначе обрезка → каша.
-        num_predict = min(160, max(80, 12 + len(cleaned.split()) * 6))
-        temperature = 0.1
-
-    payload = {
-        "model": OLLAMA_MODEL,
-        "stream": False,
-        "keep_alive": "30m",
-        "options": {
-            "temperature": temperature,
-            "top_p": 0.8,
-            "num_predict": num_predict,
-            "num_ctx": 2048,
-        },
-        "messages": messages,
-    }
-    try:
-        data = _ollama_request("/api/chat", payload, timeout=90)
-    except urllib.error.HTTPError as exc:
-        body = exc.read().decode("utf-8", errors="replace")
-        raise RuntimeError(f"Ollama HTTP {exc.code}: {body[:200]}") from exc
-
-    msg = (data.get("message") or {}).get("content") or ""
-    result = _clean_translation(msg)
-    if not result:
-        raise RuntimeError("Пустой ответ модели")
-
-    if word_raw:
-        result = _normalize_word_gloss_case(result)
-        gloss = _glossary_lookup(word_raw, sentence)
-        if gloss and _is_bad_word_translation(result, word_raw):
-            _translate_cache_put(cache_key, gloss)
-            return gloss
-        if _is_bad_word_translation(result, word_raw):
-            # Не пугаем пользователя ошибкой — переводим как фразу.
-            fallback = ollama_translate(word_raw, word=None, sentence=None)
-            _translate_cache_put(cache_key, fallback)
-            return fallback
+        result = _chat_translate(
+            _line_translate_messages(cleaned),
+            model=OLLAMA_MODEL,
+            num_predict=min(140, max(64, 16 + len(cleaned.split()) * 6)),
+            temperature=0.1,
+            num_ctx=1024,
+        )
 
     _translate_cache_put(cache_key, result)
     return result
@@ -1318,7 +1369,7 @@ def _mark_phrase_in_context(context: str, phrase: str) -> str:
 
 
 def _clean_translation(raw: str) -> str:
-    """Убирает типичные галлюцинации: примечания, кавычки, лишний текст."""
+    """Убирает типичные галлюцинации: примечания, кавычки, CJK, лишний текст."""
     text = (raw or "").strip()
     if not text:
         return ""
@@ -1341,6 +1392,12 @@ def _clean_translation(raw: str) -> str:
     result = lines[0] if lines else text.split("\n", 1)[0].strip().strip("\"'`«»")
     result = re.split(r"(?i)\s+примечание\s*[:：].*$", result, maxsplit=1)[0].strip()
     result = result.strip("\"'`«»[]")
+    # Qwen иногда вставляет китайские иероглифы в RU-ответ.
+    result = re.sub(r"[\u3040-\u30ff\u3400-\u9fff\uf900-\ufaff]+", "", result)
+    # «curious - любопытный» / «[[know]] — знать»
+    result = re.sub(r"^\[\[.*?\]\]\s*[-–—:]\s*", "", result).strip()
+    result = re.sub(r"^[A-Za-z']+\s*[-–—:]\s*", "", result).strip()
+    result = re.sub(r"\s{2,}", " ", result).strip(" ,;.")
     return result.strip()
 
 
@@ -1470,12 +1527,13 @@ class SubLearnHandler(SimpleHTTPRequestHandler):
                 return
             try:
                 translation = ollama_translate(text or word or "", word=word, sentence=sentence)
+                used_word = bool(word) and not _is_long_phrase(word)
                 self._json_response(
                     200,
                     {
                         "translation": translation,
                         "provider": "ollama",
-                        "model": OLLAMA_MODEL,
+                        "model": OLLAMA_WORD_MODEL if used_word else OLLAMA_MODEL,
                     },
                 )
             except ValueError as exc:
@@ -1590,7 +1648,7 @@ def main():
     init_vocab_db()
     server = ThreadingHTTPServer((host, port), SubLearnHandler)
     print(f"SubLearn: http://127.0.0.1:{port}")
-    print(f"AI: Ollama {OLLAMA_URL} model={OLLAMA_MODEL}")
+    print(f"AI: Ollama {OLLAMA_URL} words={OLLAMA_WORD_MODEL} lines={OLLAMA_MODEL}")
     print(f"Vocab DB: {DB_PATH}")
     print("Остановка: Ctrl+C")
     server.serve_forever()
