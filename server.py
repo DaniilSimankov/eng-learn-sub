@@ -1194,13 +1194,18 @@ def _colloquial_system_prompt(*, span: bool = False) -> str:
         "Ты переводчик разговорных субтитров EN→RU (сериал, сленг). "
         + scope
         + "Переводи смысл, как сказал бы носитель русского, а не слово в слово. "
+        "Сначала ищи фразовый глагол/идиому целиком (snap out of, get over, come on), "
+        "потом уже отдельные слова. "
         "Частые ловушки-кальки: "
+        "snap out of (it/this) → очнись / выйди из этого (НЕ «разбейся/щёлкни»); "
         "the point / what's the point → суть/смысл (НЕ «точка»); "
         "things have been/are → всё стало/идёт (НЕ «вещи»); "
         "stack (cash/money) → копить/откладывать (НЕ «стекать/штабелировать»); "
+        "hot as fuck → охуенно горячая/красивая (разг.); "
         "I mean → в смысле / ну; "
         "like (filler) → типа / как бы; "
         "ain't → разговорное отрицание. "
+        "Мат-вставки (the fuck, fucking) — усиление, не отдельный «трахать». "
         "Без дописок и пояснений. Длина roughly как оригинал. "
         "Имена латиницей. Мат без цензуры. "
         + (
@@ -1215,16 +1220,16 @@ def _line_translate_messages(cleaned: str) -> list:
     return [
         {"role": "system", "content": _colloquial_system_prompt(span=False)},
         # Few-shot: разные паттерны, не «заучивание» одной фразы.
+        {"role": "user", "content": "you just snap the fuck out of this"},
+        {"role": "assistant", "content": '{"ru":"ты просто очнись уже"}'},
         {"role": "user", "content": "I mean ain't that the point"},
         {"role": "assistant", "content": '{"ru":"в смысле, разве не в этом суть?"}'},
         {"role": "user", "content": "stack my cash"},
         {"role": "assistant", "content": '{"ru":"копить кэш"}'},
         {"role": "user", "content": "things have been like really good"},
         {"role": "assistant", "content": '{"ru":"всё стало типа реально хорошо"}'},
-        {"role": "user", "content": "what's the point of all this"},
-        {"role": "assistant", "content": '{"ru":"какой во всём этом смысл"}'},
-        {"role": "user", "content": "you know what I mean"},
-        {"role": "assistant", "content": '{"ru":"ты понимаешь, о чём я"}'},
+        {"role": "user", "content": "you're hot as fuck"},
+        {"role": "assistant", "content": '{"ru":"ты охуенно горячая"}'},
         {"role": "user", "content": cleaned},
     ]
 
@@ -1333,6 +1338,12 @@ def _is_bad_phrase_translation(source: str, translation: str) -> bool:
     if re.search(r"\bstack\b.+\b(cash|money|dough|bread)\b", src):
         if re.search(r"стек|штабел|складывать стопк", ru):
             return True
+    # snap out of → не «разбить/щёлкнуть»
+    if re.search(r"\bsnap\b.+\bout\b", src):
+        if re.search(r"разб|щёлка|щелка|лом(а|и)|треск", ru) and not re.search(
+            r"очни|выйд|перестань|брось|хватит", ru
+        ):
+            return True
     return False
 
 
@@ -1342,11 +1353,14 @@ def _strict_retry_messages(target: str) -> list:
             "role": "system",
             "content": (
                 "EN→RU colloquial subtitles. Sense, not word-for-word. "
+                "snap out of→очнись/выйди из этого (not разбейся). "
                 "the point→суть/смысл (not точка). things→всё (not вещи). "
                 "No extra words, no commentary. "
                 'JSON only: {"ru":"..."}.'
             ),
         },
+        {"role": "user", "content": "snap the fuck out of this"},
+        {"role": "assistant", "content": '{"ru":"очнись уже"}'},
         {"role": "user", "content": "ain't that the point"},
         {"role": "assistant", "content": '{"ru":"разве не в этом суть?"}'},
         {"role": "user", "content": target},
@@ -1383,15 +1397,43 @@ def _extract_ru_payload(raw: str) -> str:
     return _clean_translation(text)
 
 
-def _chat_translate(
+def _extract_json_field(raw: str, *keys: str) -> str:
+    text = (raw or "").strip()
+    if not text:
+        return ""
+    fence = re.match(r"^```(?:json)?\s*([\s\S]*?)\s*```$", text, re.IGNORECASE)
+    if fence:
+        text = fence.group(1).strip()
+    try:
+        data = json.loads(text)
+        if isinstance(data, dict):
+            for key in keys:
+                val = data.get(key)
+                if isinstance(val, str) and val.strip():
+                    return val.strip()
+        if isinstance(data, str) and data.strip():
+            return data.strip()
+    except (json.JSONDecodeError, TypeError):
+        pass
+    for key in keys:
+        m = re.search(rf'\{{\s*"{re.escape(key)}"\s*:\s*"((?:\\.|[^"\\])*)"\s*\}}', text)
+        if m:
+            try:
+                return json.loads(f'"{m.group(1)}"')
+            except json.JSONDecodeError:
+                return m.group(1).replace('\\"', '"')
+    return _clean_translation(text)
+
+
+def _chat_json(
     messages: list,
     *,
-    agent: str,
+    keys: Tuple[str, ...],
     num_predict: int,
     temperature: float,
     num_ctx: int,
+    schema_props: dict,
 ) -> str:
-    """agent: 'word' | 'phrase'. Одна модель; JSON-формат — чтобы qwen3 не уходил в болтовню."""
     payload = {
         "model": OLLAMA_MODEL,
         "stream": False,
@@ -1399,8 +1441,8 @@ def _chat_translate(
         "keep_alive": OLLAMA_KEEP_ALIVE,
         "format": {
             "type": "object",
-            "properties": {"ru": {"type": "string"}},
-            "required": ["ru"],
+            "properties": schema_props,
+            "required": list(keys),
         },
         "options": {
             "temperature": temperature,
@@ -1419,14 +1461,90 @@ def _chat_translate(
         raise RuntimeError(f"Ollama HTTP {exc.code}: {body[:200]}") from exc
 
     msg = data.get("message") or {}
-    raw = (msg.get("content") or "").strip()
-    if not raw:
-        raw = (msg.get("thinking") or "").strip()
-    result = _extract_ru_payload(raw)
+    raw = (msg.get("content") or "").strip() or (msg.get("thinking") or "").strip()
+    result = _extract_json_field(raw, *keys)
     if not result:
         raise RuntimeError("Пустой ответ модели")
     return result
 
+
+def ollama_explain(
+    *,
+    word: str,
+    sentence: str = "",
+    question: str = "",
+    translation: str = "",
+) -> str:
+    """Короткий разбор слова/фразы: зачем так сказано, грамматика, идиома."""
+    focus = _normalize_english_spacing(word or "")
+    ctx = _normalize_english_spacing(sentence or "")
+    q = (question or "").strip() or "Почему здесь так сказано? Кратко объясни."
+    ru = (translation or "").strip()
+    if not focus:
+        raise ValueError("Нужно слово или фраза")
+    if len(q) > 400:
+        raise ValueError("Слишком длинный вопрос")
+
+    system = (
+        "Ты репетитор английского для русскоязычного зрителя сериала. "
+        "Отвечай по-русски, коротко (2–5 предложений), по делу. "
+        "Объясни значение выделения в контексте реплики: идиома, сленг, грамматика или тон. "
+        "Не пересказывай всю серию. Не раздувай ответ. Мат можно упоминать прямо. "
+        'Строго JSON: {"answer":"текст ответа"}.'
+    )
+    user = (
+        f"Выделение: {focus}\n"
+        f"Реплика: {ctx or '(нет)'}\n"
+        f"Перевод на экране: {ru or '(нет)'}\n"
+        f"Вопрос: {q}"
+    )
+    return _chat_json(
+        [
+            {"role": "system", "content": system},
+            {
+                "role": "user",
+                "content": (
+                    "Выделение: snap the fuck out of this\n"
+                    "Реплика: Maddy, you just snap the fuck out of this.\n"
+                    "Перевод на экране: ты просто очнись уже\n"
+                    "Вопрос: Почему так сказано?"
+                ),
+            },
+            {
+                "role": "assistant",
+                "content": (
+                    '{"answer":"Snap out of this — идиома «очнись / выйди из этого состояния», '
+                    "не «разбить». The fuck — усилитель злости/напора. "
+                    'Героиня требует резко прекратить зацикливание."}'
+                ),
+            },
+            {"role": "user", "content": user},
+        ],
+        keys=("answer",),
+        num_predict=160,
+        temperature=0.2,
+        num_ctx=1024,
+        schema_props={"answer": {"type": "string"}},
+    )
+
+
+def _chat_translate(
+    messages: list,
+    *,
+    agent: str,
+    num_predict: int,
+    temperature: float,
+    num_ctx: int,
+) -> str:
+    """agent: 'word' | 'phrase'. Одна модель; JSON-формат — чтобы qwen3 не уходил в болтовню."""
+    return _chat_json(
+        messages,
+        keys=("ru", "translation", "text", "gloss"),
+        num_predict=num_predict,
+        temperature=temperature,
+        num_ctx=num_ctx,
+        schema_props={"ru": {"type": "string"}},
+    )
 
 def _has_broader_context(target: str, sentence: Optional[str]) -> bool:
     if not sentence or not target:
@@ -1927,6 +2045,42 @@ class SubLearnHandler(SimpleHTTPRequestHandler):
                     return
                 imported = vocab_import_many(items)
                 self._json_response(200, {"imported": imported, "items": vocab_list()})
+            except Exception as exc:  # noqa: BLE001
+                self._json_response(500, {"error": str(exc)})
+            return
+        if parsed.path == "/api/explain":
+            try:
+                payload = self._read_json_body()
+                word = str(payload.get("word") or "").strip()
+                sentence = str(payload.get("sentence") or "").strip()
+                question = str(payload.get("question") or "").strip()
+                translation = str(payload.get("translation") or "").strip()
+                if not word:
+                    self._json_response(400, {"error": "Нужен word"})
+                    return
+                answer = ollama_explain(
+                    word=word,
+                    sentence=sentence,
+                    question=question,
+                    translation=translation,
+                )
+                self._json_response(
+                    200,
+                    {
+                        "answer": answer,
+                        "provider": "ollama",
+                        "model": OLLAMA_MODEL,
+                    },
+                )
+            except ValueError as exc:
+                self._json_response(400, {"error": str(exc)})
+            except urllib.error.URLError as exc:
+                self._json_response(
+                    502,
+                    {"error": f"Ollama недоступна: {exc.reason}"},
+                )
+            except RuntimeError as exc:
+                self._json_response(502, {"error": str(exc)})
             except Exception as exc:  # noqa: BLE001
                 self._json_response(500, {"error": str(exc)})
             return

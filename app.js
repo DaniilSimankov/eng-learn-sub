@@ -122,6 +122,10 @@ const popupRetry = $('#popup-retry');
 const popupAi = $('#popup-ai');
 const popupProvider = $('#popup-provider');
 const popupContext = $('#popup-context');
+const popupAskForm = $('#popup-ask-form');
+const popupAskInput = $('#popup-ask-input');
+const popupAskAnswer = $('#popup-ask-answer');
+const popupAskSend = $('#popup-ask-send');
 const vocabDrawer = $('#vocab-drawer');
 const vocabList = $('#vocab-list');
 const vocabEmpty = $('#vocab-empty');
@@ -904,6 +908,18 @@ popupAi?.addEventListener('click', (e) => {
   e.stopPropagation();
   refinePopupWithAi();
 });
+popupAskForm?.addEventListener('submit', (e) => {
+  e.preventDefault();
+  e.stopPropagation();
+  askPopupTutor(popupAskInput?.value || '');
+});
+$$('.popup__ask-chip').forEach((chip) => {
+  chip.addEventListener('click', (e) => {
+    e.stopPropagation();
+    askPopupTutor(chip.dataset.q || chip.textContent || '');
+  });
+});
+popupAskInput?.addEventListener('click', (e) => e.stopPropagation());
 subtitleTranslationRetry?.addEventListener('click', (e) => {
   e.stopPropagation();
   retryInlineTranslation();
@@ -2360,6 +2376,7 @@ function showPopup(word, sentence, rect) {
     popupTranslationNote.classList.add('hidden');
   }
   popupContext.textContent = sentence;
+  resetPopupAsk();
   wordPopup.classList.remove('hidden');
 
   const popupRect = wordPopup.getBoundingClientRect();
@@ -2453,6 +2470,68 @@ async function refinePopupWithAi() {
   }
 }
 
+function resetPopupAsk() {
+  if (popupAskInput) popupAskInput.value = '';
+  if (popupAskAnswer) {
+    popupAskAnswer.textContent = '';
+    popupAskAnswer.classList.add('hidden');
+    popupAskAnswer.classList.remove('is-loading', 'is-error');
+  }
+  if (popupAskSend) popupAskSend.disabled = false;
+}
+
+async function askPopupTutor(question) {
+  const current = state.lastPopupWord;
+  if (!current?.word) return;
+  const q = String(question || '').trim();
+  if (!q) return;
+  if (!state.onlineTranslation) {
+    if (popupAskAnswer) {
+      popupAskAnswer.textContent = 'Включите онлайн-перевод в настройках';
+      popupAskAnswer.classList.remove('hidden', 'is-loading');
+      popupAskAnswer.classList.add('is-error');
+    }
+    return;
+  }
+
+  if (popupAskInput) popupAskInput.value = q;
+  if (popupAskAnswer) {
+    popupAskAnswer.textContent = state.aiReady ? 'ИИ думает…' : 'Загрузка модели…';
+    popupAskAnswer.classList.remove('hidden', 'is-error');
+    popupAskAnswer.classList.add('is-loading');
+  }
+  if (popupAskSend) popupAskSend.disabled = true;
+
+  try {
+    const res = await fetch('/api/explain', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        word: current.word,
+        sentence: current.sentence || '',
+        question: q,
+        translation: popupTranslation?.textContent || '',
+      }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || 'Ошибка разбора');
+    if (state.lastPopupWord?.word !== current.word) return;
+    if (popupAskAnswer) {
+      popupAskAnswer.textContent = data.answer || 'Пустой ответ';
+      popupAskAnswer.classList.remove('is-loading', 'is-error');
+    }
+  } catch (err) {
+    if (state.lastPopupWord?.word !== current.word) return;
+    if (popupAskAnswer) {
+      popupAskAnswer.textContent = err?.message || 'Ошибка разбора';
+      popupAskAnswer.classList.remove('is-loading');
+      popupAskAnswer.classList.add('is-error');
+    }
+  } finally {
+    if (popupAskSend) popupAskSend.disabled = false;
+  }
+}
+
 function splitTranslationNote(raw) {
   const text = String(raw || '').trim();
   if (!text) return { main: '', note: '' };
@@ -2514,6 +2593,7 @@ function hidePopup() {
   popupTranslation.classList.remove('is-error');
   setProviderBadge(popupProvider, '');
   state.lastPopupProvider = null;
+  resetPopupAsk();
   if (popupTranslationNote) {
     popupTranslationNote.textContent = '';
     popupTranslationNote.classList.add('hidden');

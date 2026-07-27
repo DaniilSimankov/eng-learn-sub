@@ -279,6 +279,26 @@
             <button type="button" class="btn btn--primary btn--sm" id="popup-save">+ В словарь</button>
             <button type="button" class="btn btn--ghost btn--sm" id="popup-speak">🔊 Произнести</button>
           </div>
+          <div class="popup__ask" id="popup-ask">
+            <div class="popup__ask-label">Спросить ИИ</div>
+            <div class="popup__ask-chips">
+              <button type="button" class="popup__ask-chip" data-q="Почему здесь так сказано? Что значит эта фраза?">Почему так?</button>
+              <button type="button" class="popup__ask-chip" data-q="Объясни грамматику этого выражения кратко.">Грамматика</button>
+              <button type="button" class="popup__ask-chip" data-q="Это идиома или сленг? Как звучит по-русски естественно?">Идиома?</button>
+            </div>
+            <form class="popup__ask-form" id="popup-ask-form">
+              <input
+                type="text"
+                id="popup-ask-input"
+                class="popup__ask-input"
+                placeholder="Свой вопрос…"
+                maxlength="400"
+                autocomplete="off"
+              >
+              <button type="submit" class="btn btn--ghost btn--sm" id="popup-ask-send" title="Спросить">↵</button>
+            </form>
+            <div id="popup-ask-answer" class="popup__ask-answer hidden" aria-live="polite"></div>
+          </div>
         </div>
       </section>
     </main>
