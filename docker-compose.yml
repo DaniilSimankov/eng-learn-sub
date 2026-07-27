@@ -10,6 +10,11 @@ services:
       - "8765:8765"
     volumes:
       - ollama_data:/root/.ollama
+      - ./server.py:/app/server.py
+      - ./app.js:/app/app.js
+      - ./index.html:/app/index.html
+      - ./styles.css:/app/styles.css
+      - ./ad-skip.js:/app/ad-skip.js
     environment:
       SUBLEARN_OLLAMA_URL: http://127.0.0.1:11434
       SUBLEARN_OLLAMA_MODEL: qwen2.5:3b

@@ -1107,6 +1107,39 @@ body {
   cursor: grabbing;
 }
 
+.snap-guides {
+  position: absolute;
+  inset: 0;
+  z-index: 9;
+  pointer-events: none;
+  display: none;
+}
+
+.player-section.is-snapping .snap-guides,
+.player-section.is-subs-edit.is-snapping .snap-guides {
+  display: block;
+}
+
+.snap-guide {
+  position: absolute;
+  background: rgba(108, 140, 255, 0.75);
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.25);
+}
+
+.snap-guide--v {
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  transform: translateX(-50%);
+}
+
+.snap-guide--h {
+  left: 0;
+  right: 0;
+  height: 1px;
+  transform: translateY(-50%);
+}
+
 .player-section:fullscreen .subtitle-panel__label,
 .player-section:-webkit-full-screen .subtitle-panel__label,
 .player-section.is-learn-fs .subtitle-panel__label {

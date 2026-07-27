@@ -760,6 +760,51 @@ def ollama_status() -> dict:
     }
 
 
+# Частые маты/сленг: 3B-модель часто выдумывает «фуствать» вместо нормального перевода.
+VULGAR_GLOSSARY = {
+    "fuck": "ёбать; блять",
+    "fucking": "ёбаный; (усиление) блять",
+    "fucked": "в жопе; трахнутый",
+    "fucker": "мудак; ублюдок",
+    "fuckin": "ёбаный; (усиление) блять",
+    "fuckin'": "ёбаный; (усиление) блять",
+    "shit": "дерьмо; херня",
+    "shitty": "дерьмовое; хреновое",
+    "bullshit": "полная херня",
+    "damn": "чёрт; проклятый",
+    "damned": "проклятый",
+    "bitch": "сука",
+    "bitches": "суки",
+    "ass": "жопа",
+    "asses": "жопы",
+    "asshole": "мудак; жопа",
+    "bastard": "ублюдок",
+    "hell": "ад; чёрт",
+    "crap": "херня",
+    "dick": "хуй",
+    "cock": "хуй",
+    "pussy": "пизда; тряпка",
+    "piss": "ссать; бесить",
+    "pissed": "в бешенстве; пьяный",
+    "whore": "шлюха",
+    "slut": "шлюха",
+    "motherfucker": "мудак; сукин сын",
+    "motherfucking": "ёбаный; (усиление) блять",
+    "cunt": "пизда",
+    "suck": "сосать; отстой",
+    "sucks": "отстой",
+    "goddamn": "чёртов; проклятый",
+    "goddamned": "чёртов",
+}
+
+
+def _glossary_lookup(phrase: str) -> Optional[str]:
+    key = re.sub(r"^[^a-zA-Z']+|[^a-zA-Z']+$", "", (phrase or "").strip()).lower()
+    if not key:
+        return None
+    return VULGAR_GLOSSARY.get(key)
+
+
 def ollama_translate(text: str, *, word: Optional[str] = None, sentence: Optional[str] = None) -> str:
     cleaned = (text or "").strip()
     if not cleaned:
@@ -769,34 +814,62 @@ def ollama_translate(text: str, *, word: Optional[str] = None, sentence: Optiona
 
     if word:
         target = word.strip()
+        gloss = _glossary_lookup(target)
+        if gloss and " " not in target.strip():
+            return gloss
+
         ctx = (sentence or "").strip()
-        # Одна реплика — только для выбора значения; соседние реплики не передаём.
         if len(ctx) > 280:
             ctx = ctx[:280].rsplit(" ", 1)[0]
+
+        marked = _mark_phrase_in_context(ctx, target) if ctx else f"[[{target}]]"
+
         system = (
-            "You are a bilingual dictionary, not a chat assistant. "
-            "Translate ONLY the English Phrase into Russian. "
-            "The Context line is solely for sense disambiguation — never translate it, "
-            "never quote it, never continue it. "
-            "Reply with one short Russian equivalent (a word or short phrase). "
-            "No full sentences unless the Phrase itself is a full sentence. "
-            "No notes, no Примечание, no explanations, no markdown, no quotes, "
-            "no Chinese/Japanese/Korean. Cyrillic Russian only."
+            "Ты двуязычный словарь EN→RU для сериалов 18+. "
+            "Переведи ТОЛЬКО фрагмент между [[ и ]]. Остальное — контекст, не переводи его. "
+            "Мат, сленг и грубости переводи ПРЯМО и ТОЧНО (блять, хуй, сука, дерьмо и т.д.). "
+            "Запрещено: смягчать, цензурить, заменять на «блин/фиг», "
+            "выдумывать несуществующие слова, писать примечания. "
+            "Ответ: одно русское слово или короткая словарная глосса. Только кириллица."
         )
-        user = (
-            f"Phrase: {target}\n"
-            f"Context (do not translate): {ctx or '(none)'}"
-        )
-        num_predict = 40
+        user = f"Переведи только [[...]]:\n{marked}\n\nФраза: {target}"
+        messages = [
+            {"role": "system", "content": system},
+            {
+                "role": "user",
+                "content": "Переведи только [[...]]:\nof course I'd [[fucking]] go.\n\nФраза: fucking",
+            },
+            {"role": "assistant", "content": "блять (усиление)"},
+            {
+                "role": "user",
+                "content": "Переведи только [[...]]:\nThis is [[shit]].\n\nФраза: shit",
+            },
+            {"role": "assistant", "content": "дерьмо; херня"},
+            {
+                "role": "user",
+                "content": "Переведи только [[...]]:\nWhat a [[bitch]].\n\nФраза: bitch",
+            },
+            {"role": "assistant", "content": "сука"},
+            {
+                "role": "user",
+                "content": "Переведи только [[...]]:\nI don't [[know]].\n\nФраза: know",
+            },
+            {"role": "assistant", "content": "знать"},
+            {"role": "user", "content": user},
+        ]
+        num_predict = 36
         temperature = 0
     else:
         system = (
-            "Translate the English subtitle line into natural Russian. "
-            "Reply with ONLY the Russian translation of that line. "
-            "Cyrillic only — no notes, no quotes, no Chinese/Japanese/Korean."
+            "Переведи реплику субтитров на естественный русский. "
+            "Мат и грубости сохраняй без смягчения и цензуры. "
+            "Ответ — только перевод реплики, кириллица, без примечаний."
         )
-        user = cleaned
-        num_predict = 60
+        messages = [
+            {"role": "system", "content": system},
+            {"role": "user", "content": cleaned},
+        ]
+        num_predict = 80
         temperature = 0.1
 
     payload = {
@@ -805,14 +878,11 @@ def ollama_translate(text: str, *, word: Optional[str] = None, sentence: Optiona
         "keep_alive": "30m",
         "options": {
             "temperature": temperature,
-            "top_p": 0.9,
+            "top_p": 0.8,
             "num_predict": num_predict,
-            "num_ctx": 1024,
+            "num_ctx": 2048,
         },
-        "messages": [
-            {"role": "system", "content": system},
-            {"role": "user", "content": user},
-        ],
+        "messages": messages,
     }
     try:
         data = _ollama_request("/api/chat", payload, timeout=90)
@@ -824,7 +894,29 @@ def ollama_translate(text: str, *, word: Optional[str] = None, sentence: Optiona
     result = _clean_translation(msg)
     if not result:
         raise RuntimeError("Пустой ответ модели")
+
+    if word:
+        gloss = _glossary_lookup(word)
+        if gloss and (re.search(r"[A-Za-z]", result) or len(result) > 40):
+            return gloss
+
     return result
+
+
+
+def _mark_phrase_in_context(context: str, phrase: str) -> str:
+    """Оборачивает первое вхождение фразы в [[...]] (без учёта регистра)."""
+    ctx = context or ""
+    target = (phrase or "").strip()
+    if not ctx or not target:
+        return f"[[{target}]]" if target else ctx
+
+    pattern = re.compile(re.escape(target), re.IGNORECASE)
+    match = pattern.search(ctx)
+    if not match:
+        return f"{ctx}\n[[{target}]]"
+    start, end = match.span()
+    return f"{ctx[:start]}[[{ctx[start:end]}]]{ctx[end:]}"
 
 
 def _clean_translation(raw: str) -> str:
@@ -833,23 +925,24 @@ def _clean_translation(raw: str) -> str:
     if not text:
         return ""
 
-    # Берём только первую содержательную строку до «Примечание»
     lines = []
     for line in text.replace("\r\n", "\n").split("\n"):
         s = line.strip().strip("\"'`«»")
         if not s:
             continue
-        if re.match(r"(?i)^примечание\s*[:：]", s):
+        if re.match(r"(?i)^(примечание|note|context|phrase|перевод)\s*[:：]", s):
+            if re.match(r"(?i)^перевод\s*[:：]", s):
+                s = re.sub(r"(?i)^перевод\s*[:：]\s*", "", s).strip()
+                if s:
+                    lines.append(s)
             break
-        if re.match(r"(?i)^(note|context|phrase)\s*[:：]", s):
-            continue
+        s = re.sub(r"^\[\[|\]\]$", "", s).strip()
         lines.append(s)
-        break  # только первая строка-перевод
+        break
 
     result = lines[0] if lines else text.split("\n", 1)[0].strip().strip("\"'`«»")
-
-    # Если модель вставила «Примечание:» в ту же строку
     result = re.split(r"(?i)\s+примечание\s*[:：].*$", result, maxsplit=1)[0].strip()
+    result = result.strip("\"'`«»[]")
     return result.strip()
 
 

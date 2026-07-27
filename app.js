@@ -20,13 +20,13 @@ const SUBS_SIZE_DEFAULT_PCT = 100;
 function loadSeekStep() {
   try {
     const n = Number(localStorage.getItem(SEEK_STEP_KEY));
-    if (n === 5 || n === 10) return n;
+    if (n === 3 || n === 5 || n === 10) return n;
   } catch { /* ignore */ }
   return 10;
 }
 
 function saveSeekStep(sec) {
-  const n = sec === 5 ? 5 : 10;
+  const n = [3, 5, 10].includes(sec) ? sec : 10;
   state.seekStep = n;
   try {
     localStorage.setItem(SEEK_STEP_KEY, String(n));
@@ -545,12 +545,8 @@ function syncAudioTracksUI() {
 }
 
 function formatQualityLabel(level) {
-  if (level.height) {
-    const mbps = level.bitrate ? ` · ${Math.round(level.bitrate / 1000)} kbps` : '';
-    return `${level.height}p${mbps}`;
-  }
+  if (level.height) return `${level.height}p`;
   if (level.width && level.height) return `${level.width}×${level.height}`;
-  if (level.bitrate) return `${Math.round(level.bitrate / 1000)} kbps`;
   return 'Поток';
 }
 
@@ -1974,7 +1970,7 @@ async function translateText(text) {
   if (!state.onlineTranslation) {
     return 'AI-перевод выключен — включите в настройках выше';
   }
-  const key = `en-ru:${text}`;
+  const key = `en-ru:v3:${text}`;
   if (state.translationCache.has(key)) return state.translationCache.get(key);
   try {
     const result = await fetchTranslation(text);
@@ -1991,7 +1987,7 @@ async function translateWord(word, sentence = '') {
     return clean;
   }
   const ctx = sentence || state.lastPopupWord?.sentence || '';
-  const key = `word:${clean.toLowerCase()}:${ctx}`;
+  const key = `word:v4:${clean.toLowerCase()}:${ctx}`;
   if (state.translationCache.has(key)) return state.translationCache.get(key);
   try {
     const result = await fetchTranslation(clean, { word: clean, sentence: ctx });
@@ -2195,19 +2191,130 @@ function saveSubsPosition(pos) {
   } catch { /* ignore */ }
 }
 
-function applySubsPosition(pos) {
-  if (!subtitlePanel) return;
+const SUBS_SNAP_THRESHOLD = 2.4; // % — мягкий магнит как в PowerPoint
+
+function getSubsPositionBounds() {
+  if (!subtitlePanel || !playerSection) {
+    return { minX: 8, maxX: 92, minY: 8, maxY: 88 };
+  }
+  const section = playerSection.getBoundingClientRect();
+  const panel = subtitlePanel.getBoundingClientRect();
+  if (!section.width || !section.height) {
+    return { minX: 8, maxX: 92, minY: 8, maxY: 88 };
+  }
+  // Центр панели в %; край экрана = halfSize, без «невидимой стены» на 92%
+  const pad = 1.2;
+  const halfW = Math.max(4, (panel.width / section.width) * 50);
+  const halfH = Math.max(3, (panel.height / section.height) * 50);
+  return {
+    minX: Math.min(48, halfW + pad),
+    maxX: Math.max(52, 100 - halfW - pad),
+    minY: Math.min(48, halfH + pad),
+    maxY: Math.max(52, 100 - halfH - pad),
+  };
+}
+
+function snapSubsAxis(value, magnets, threshold = SUBS_SNAP_THRESHOLD) {
+  let best = value;
+  let guide = null;
+  let bestDist = threshold;
+  for (const m of magnets) {
+    const d = Math.abs(value - m);
+    if (d <= bestDist) {
+      bestDist = d;
+      best = m;
+      guide = m;
+    }
+  }
+  return { value: best, guide };
+}
+
+function snapSubsPosition(x, y, bounds) {
+  const magnetsX = [bounds.minX, 50, bounds.maxX];
+  const magnetsY = [bounds.minY, 50, bounds.maxY];
+  const sx = snapSubsAxis(x, magnetsX);
+  const sy = snapSubsAxis(y, magnetsY);
+  return {
+    x: sx.value,
+    y: sy.value,
+    guideX: sx.guide,
+    guideY: sy.guide,
+  };
+}
+
+function ensureSnapGuides() {
+  let root = playerSection.querySelector('.snap-guides');
+  if (root) return root;
+  root = document.createElement('div');
+  root.className = 'snap-guides';
+  root.innerHTML = `
+    <div class="snap-guide snap-guide--v" data-guide="v" hidden></div>
+    <div class="snap-guide snap-guide--h" data-guide="h" hidden></div>
+  `;
+  playerSection.appendChild(root);
+  return root;
+}
+
+function updateSnapGuides(guideX, guideY) {
+  const root = ensureSnapGuides();
+  const v = root.querySelector('[data-guide="v"]');
+  const h = root.querySelector('[data-guide="h"]');
+  if (v) {
+    if (guideX == null) v.hidden = true;
+    else {
+      v.hidden = false;
+      v.style.left = `${guideX}%`;
+    }
+  }
+  if (h) {
+    if (guideY == null) h.hidden = true;
+    else {
+      h.hidden = false;
+      h.style.top = `${guideY}%`;
+    }
+  }
+}
+
+function hideSnapGuides() {
+  const root = playerSection?.querySelector('.snap-guides');
+  if (!root) return;
+  root.querySelectorAll('.snap-guide').forEach((el) => { el.hidden = true; });
+}
+
+function applySubsPosition(pos, { snap = false } = {}) {
+  if (!subtitlePanel) return null;
   if (!pos) {
     subtitlePanel.classList.remove('is-custom-pos');
     subtitlePanel.style.left = '';
     subtitlePanel.style.top = '';
-    return;
+    hideSnapGuides();
+    return null;
   }
-  const x = Math.min(92, Math.max(8, pos.x));
-  const y = Math.min(88, Math.max(8, pos.y));
+  const bounds = getSubsPositionBounds();
+  let x = Number(pos.x);
+  let y = Number(pos.y);
+  if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+
+  x = Math.min(bounds.maxX, Math.max(bounds.minX, x));
+  y = Math.min(bounds.maxY, Math.max(bounds.minY, y));
+
+  let guideX = null;
+  let guideY = null;
+  if (snap) {
+    const snapped = snapSubsPosition(x, y, bounds);
+    x = snapped.x;
+    y = snapped.y;
+    guideX = snapped.guideX;
+    guideY = snapped.guideY;
+    updateSnapGuides(guideX, guideY);
+  } else {
+    hideSnapGuides();
+  }
+
   subtitlePanel.classList.add('is-custom-pos');
   subtitlePanel.style.left = `${x}%`;
   subtitlePanel.style.top = `${y}%`;
+  return { x, y };
 }
 
 function initSubsPanelDrag() {
@@ -2228,21 +2335,25 @@ function initSubsPanelDrag() {
       sectionH: rect.height,
     };
     subtitlePanel.classList.add('is-dragging');
+    playerSection.classList.add('is-snapping');
     subtitlePanel.setPointerCapture?.(e.pointerId);
   });
 
   subtitlePanel.addEventListener('pointermove', (e) => {
     if (!state.subsDrag) return;
     const { offsetX, offsetY, sectionLeft, sectionTop, sectionW, sectionH } = state.subsDrag;
+    if (!sectionW || !sectionH) return;
     const x = ((e.clientX - offsetX - sectionLeft) / sectionW) * 100;
     const y = ((e.clientY - offsetY - sectionTop) / sectionH) * 100;
-    applySubsPosition({ x, y });
+    applySubsPosition({ x, y }, { snap: true });
   });
 
   const endDrag = () => {
     if (!state.subsDrag) return;
     state.subsDrag = null;
     subtitlePanel.classList.remove('is-dragging');
+    playerSection.classList.remove('is-snapping');
+    hideSnapGuides();
     if (subtitlePanel.classList.contains('is-custom-pos')) {
       const x = Number.parseFloat(subtitlePanel.style.left);
       const y = Number.parseFloat(subtitlePanel.style.top);
