@@ -12,8 +12,6 @@ const SUBS_SIZE_KEY = 'sublearn-subs-size';
 const SUBS_POS_KEY = 'sublearn-subs-pos';
 const PAGE_URL_KEY = 'sublearn-page-url';
 const SEEK_STEP_KEY = 'sublearn-seek-step';
-const NET_MODE_KEY = 'sublearn-net-mode';
-const NET_PROXY_KEY = 'sublearn-net-proxy';
 const LEARN_PANEL_H_DEFAULT = 200;
 const LEARN_PANEL_H_MIN = 140;
 const LEARN_PANEL_H_MAX_RATIO = 0.55;
@@ -294,101 +292,6 @@ function bindOnlineTranslationToggle(el) {
 bindOnlineTranslationToggle(onlineTranslationSetup);
 refreshAiStatus();
 setInterval(refreshAiStatus, 15000);
-
-const netModeSelect = $('#net-mode');
-const netProxyInput = $('#net-proxy');
-const netProxyWrap = $('#net-proxy-wrap');
-const netStatusEl = $('#net-status');
-const btnNetCheck = $('#btn-net-check');
-
-function loadNetModePref() {
-  try {
-    const m = localStorage.getItem(NET_MODE_KEY);
-    return m === 'split' ? 'split' : 'direct';
-  } catch {
-    return 'direct';
-  }
-}
-
-function loadNetProxyPref() {
-  try {
-    return localStorage.getItem(NET_PROXY_KEY) || 'http://host.docker.internal:7890';
-  } catch {
-    return 'http://host.docker.internal:7890';
-  }
-}
-
-function syncNetProxyVisibility() {
-  const split = netModeSelect?.value === 'split';
-  netProxyWrap?.classList.toggle('hidden', !split);
-}
-
-async function pushNetConfigToServer() {
-  const mode = netModeSelect?.value === 'split' ? 'split' : 'direct';
-  const proxy = (netProxyInput?.value || '').trim();
-  try {
-    localStorage.setItem(NET_MODE_KEY, mode);
-    localStorage.setItem(NET_PROXY_KEY, proxy);
-  } catch { /* ignore */ }
-  const res = await fetch('/api/net-config', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ mode, proxy }),
-  });
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data.error || 'Не удалось сохранить сеть');
-  return data;
-}
-
-function setNetStatus(text, kind = '') {
-  if (!netStatusEl) return;
-  netStatusEl.textContent = text;
-  netStatusEl.classList.remove('is-ok', 'is-err');
-  if (kind) netStatusEl.classList.add(kind);
-}
-
-async function checkNetStatus() {
-  setNetStatus('Проверяю…');
-  try {
-    await pushNetConfigToServer();
-    const res = await fetch('/api/net-status');
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error || 'Ошибка проверки');
-    const dIp = data.direct?.ip || '—';
-    const pIp = data.proxyProbe?.ip;
-    const pErr = data.proxyProbe?.error;
-    if (data.mode === 'split') {
-      if (!data.proxy) {
-        setNetStatus('Сплит: укажите прокси', 'is-err');
-        return;
-      }
-      if (pErr) {
-        setNetStatus(`Прямой ${dIp} · прокси ошибка: ${pErr}`, 'is-err');
-        return;
-      }
-      setNetStatus(`Прямой ${dIp} · через прокси ${pIp || '—'}`, 'is-ok');
-    } else {
-      setNetStatus(`Прямой IP: ${dIp}`, data.direct?.ok ? 'is-ok' : 'is-err');
-    }
-  } catch (err) {
-    setNetStatus(err?.message || 'Ошибка сети', 'is-err');
-  }
-}
-
-if (netModeSelect) {
-  netModeSelect.value = loadNetModePref();
-  if (netProxyInput) netProxyInput.value = loadNetProxyPref();
-  syncNetProxyVisibility();
-  netModeSelect.addEventListener('change', () => {
-    syncNetProxyVisibility();
-    pushNetConfigToServer().catch((err) => setNetStatus(err.message, 'is-err'));
-  });
-  netProxyInput?.addEventListener('change', () => {
-    pushNetConfigToServer().catch((err) => setNetStatus(err.message, 'is-err'));
-  });
-  btnNetCheck?.addEventListener('click', checkNetStatus);
-  pushNetConfigToServer().catch(() => {});
-}
 
 async function refreshAiStatus() {
   if (!aiStatusEl) return;
@@ -1097,13 +1000,6 @@ async function resolvePageUrl() {
     return;
   }
   savePageUrl(url);
-
-  try {
-    await pushNetConfigToServer();
-  } catch (err) {
-    setStatus(err?.message || 'Ошибка настроек сети', true);
-    return;
-  }
 
   setStatus('Ищу Ylitron ID на странице NewDeaf…');
   btnResolve.disabled = true;

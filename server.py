@@ -22,15 +22,7 @@ from urllib.parse import parse_qs, quote, urljoin, urlparse, urlunparse
 ROOT = Path(__file__).resolve().parent
 DATA_DIR = Path(os.environ.get("SUBLEARN_DATA_DIR", str(ROOT / "data")))
 DB_PATH = DATA_DIR / "vocab.db"
-NET_CONFIG_PATH = DATA_DIR / "net.json"
 _db_lock = threading.RLock()
-_net_lock = threading.RLock()
-
-# mode: direct | split ; proxy: http://host.docker.internal:7890
-_net_config = {
-    "mode": "direct",
-    "proxy": (os.environ.get("SUBLEARN_PROXY") or "").strip(),
-}
 USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
     "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
@@ -202,157 +194,19 @@ def validate_media_url(url: str) -> str:
     raise SecurityError("URL медиа не из доверенного списка CDN")
 
 
-def _in_docker() -> bool:
-    return Path("/.dockerenv").exists() or bool(os.environ.get("SUBLEARN_IN_DOCKER"))
-
-
-def _normalize_proxy_url(proxy: str) -> str:
-    proxy = (proxy or "").strip()
-    if not proxy:
-        return ""
-    parsed = urlparse(proxy)
-    if not parsed.scheme or not parsed.hostname:
-        raise ValueError(
-            "Прокси: ожидается URL вида http://host.docker.internal:7890 "
-            "или socks5://host.docker.internal:1080"
-        )
-    scheme = parsed.scheme.lower()
-    if scheme not in ("http", "https", "socks5", "socks4", "socks5h"):
-        raise ValueError("Поддерживаются только http(s) и socks4/5 прокси")
-    host = parsed.hostname
-    # Из контейнера 127.0.0.1 — это сам контейнер, не Mac
-    if _in_docker() and host in ("127.0.0.1", "localhost"):
-        port = parsed.port
-        auth = ""
-        if parsed.username:
-            auth = quote(parsed.username, safe="")
-            if parsed.password:
-                auth += ":" + quote(parsed.password, safe="")
-            auth += "@"
-        netloc = f"{auth}host.docker.internal" + (f":{port}" if port else "")
-        proxy = urlunparse((scheme, netloc, parsed.path or "", "", parsed.query, ""))
-    return proxy
-
-
-def load_net_config() -> dict:
-    with _net_lock:
-        if NET_CONFIG_PATH.exists():
-            try:
-                data = json.loads(NET_CONFIG_PATH.read_text(encoding="utf-8"))
-                if isinstance(data, dict):
-                    mode = data.get("mode") or "direct"
-                    if mode not in ("direct", "split"):
-                        mode = "direct"
-                    proxy = str(data.get("proxy") or "").strip()
-                    env_proxy = (os.environ.get("SUBLEARN_PROXY") or "").strip()
-                    _net_config["mode"] = mode
-                    _net_config["proxy"] = proxy or env_proxy
-            except Exception:  # noqa: BLE001
-                pass
-        return dict(_net_config)
-
-
-def save_net_config(*, mode: Optional[str] = None, proxy: Optional[str] = None) -> dict:
-    with _net_lock:
-        if mode is not None:
-            if mode not in ("direct", "split"):
-                raise ValueError("mode: direct или split")
-            _net_config["mode"] = mode
-        if proxy is not None:
-            normalized = _normalize_proxy_url(proxy) if str(proxy).strip() else ""
-            _net_config["proxy"] = normalized
-        DATA_DIR.mkdir(parents=True, exist_ok=True)
-        NET_CONFIG_PATH.write_text(
-            json.dumps(_net_config, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
-        return dict(_net_config)
-
-
-def get_net_config() -> dict:
-    with _net_lock:
-        return dict(_net_config)
-
-
-def resolve_route(kind: str) -> str:
-    """kind: page | media → direct | proxy"""
-    cfg = get_net_config()
-    if cfg.get("mode") == "split":
-        if kind == "page":
-            if not cfg.get("proxy"):
-                raise ValueError(
-                    "Режим «Сплит»: укажите локальный прокси VPN "
-                    "(например http://host.docker.internal:7890)"
-                )
-            return "proxy"
-        return "direct"
-    return "direct"
-
-
-def _build_opener(route: str):
-    ctx = ssl.create_default_context()
-    https_handler = urllib.request.HTTPSHandler(context=ctx)
-    if route != "proxy":
-        return urllib.request.build_opener(
-            urllib.request.ProxyHandler({}),
-            https_handler,
-        )
-
-    proxy = _normalize_proxy_url(get_net_config().get("proxy") or "")
-    if not proxy:
-        raise ValueError("Прокси не задан")
-    scheme = urlparse(proxy).scheme.lower()
-
-    if scheme in ("socks5", "socks5h", "socks4"):
-        try:
-            import socks  # type: ignore
-            from sockshandler import SocksiPyHandler  # type: ignore
-        except ImportError as exc:
-            raise ValueError(
-                "Для socks-прокси нужен пакет PySocks в контейнере. "
-                "Используйте HTTP-прокси VPN-клиента (часто тот же порт)."
-            ) from exc
-        host = urlparse(proxy).hostname or "127.0.0.1"
-        port = urlparse(proxy).port or 1080
-        sock_type = socks.SOCKS5 if scheme.startswith("socks5") else socks.SOCKS4
-        rdns = scheme == "socks5h"
-        return urllib.request.build_opener(
-            SocksiPyHandler(sock_type, host, port, rdns=rdns),
-            https_handler,
-        )
-
-    return urllib.request.build_opener(
-        urllib.request.ProxyHandler({"http": proxy, "https": proxy}),
-        https_handler,
-    )
-
-
-def _open_request(req: urllib.request.Request, timeout: int, route: str):
-    opener = _build_opener(route)
-    return opener.open(req, timeout=timeout)
-
-
-def fetch_url(url: str, timeout: int = 20, *, kind: str = "media", route: str = "auto") -> str:
-    if route == "auto":
-        route = resolve_route(kind)
+def fetch_url(url: str, timeout: int = 20) -> str:
     req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
-    with _open_request(req, timeout, route) as resp:
+    ctx = ssl.create_default_context()
+    with urllib.request.urlopen(req, timeout=timeout, context=ctx) as resp:
         charset = resp.headers.get_content_charset() or "utf-8"
         return resp.read().decode(charset, errors="replace")
 
 
-def fetch_binary(
-    url: str,
-    timeout: int = 30,
-    *,
-    kind: str = "media",
-    route: str = "auto",
-) -> Tuple[bytes, str]:
+def fetch_binary(url: str, timeout: int = 30) -> Tuple[bytes, str]:
     validate_media_url(url)
-    if route == "auto":
-        route = resolve_route(kind)
     req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
-    with _open_request(req, timeout, route) as resp:
+    ctx = ssl.create_default_context()
+    with urllib.request.urlopen(req, timeout=timeout, context=ctx) as resp:
         data = resp.read()
         ctype = resp.headers.get("Content-Type") or "application/octet-stream"
         return data, ctype
@@ -363,13 +217,10 @@ def embed_is_available(url: str) -> bool:
         validate_embed_url(url)
     except SecurityError:
         return False
-    try:
-        route = resolve_route("media")
-    except ValueError:
-        route = "direct"
+    ctx = ssl.create_default_context()
     try:
         req = urllib.request.Request(url, method="HEAD", headers={"User-Agent": USER_AGENT})
-        with _open_request(req, 4, route) as resp:
+        with urllib.request.urlopen(req, timeout=4, context=ctx) as resp:
             return resp.status < 400
     except urllib.error.HTTPError as exc:
         if exc.code in (405, 501):
@@ -377,35 +228,6 @@ def embed_is_available(url: str) -> bool:
         return exc.code < 400
     except urllib.error.URLError:
         return False
-
-
-def probe_external_ip(route: str) -> dict:
-    url = "https://api.ipify.org?format=json"
-    try:
-        req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
-        with _open_request(req, 8, route) as resp:
-            data = json.loads(resp.read().decode("utf-8", errors="replace"))
-            return {"ok": True, "route": route, "ip": data.get("ip"), "error": None}
-    except Exception as exc:  # noqa: BLE001
-        return {"ok": False, "route": route, "ip": None, "error": str(exc)}
-
-
-def net_status() -> dict:
-    cfg = get_net_config()
-    direct = probe_external_ip("direct")
-    via_proxy = None
-    if cfg.get("proxy"):
-        try:
-            via_proxy = probe_external_ip("proxy")
-        except Exception as exc:  # noqa: BLE001
-            via_proxy = {"ok": False, "route": "proxy", "ip": None, "error": str(exc)}
-    return {
-        "mode": cfg.get("mode"),
-        "proxy": cfg.get("proxy") or "",
-        "inDocker": _in_docker(),
-        "direct": direct,
-        "proxyProbe": via_proxy,
-    }
 
 
 def clean_text(raw: str) -> str:
@@ -766,7 +588,7 @@ def resolve_page(url: str) -> dict:
             result.update(ref)
         return result
 
-    page_html = fetch_url(url, kind="page")
+    page_html = fetch_url(url)
     iframe_urls = extract_players(page_html)
     if not iframe_urls:
         raise ValueError(
@@ -1477,15 +1299,6 @@ class SubLearnHandler(SimpleHTTPRequestHandler):
         if parsed.path == "/api/ai-status":
             self._json_response(200, ollama_status())
             return
-        if parsed.path == "/api/net-config":
-            self._json_response(200, load_net_config())
-            return
-        if parsed.path == "/api/net-status":
-            try:
-                self._json_response(200, net_status())
-            except Exception as exc:  # noqa: BLE001
-                self._json_response(500, {"error": str(exc)})
-            return
         if parsed.path == "/api/vocab":
             try:
                 self._json_response(200, {"items": vocab_list()})
@@ -1533,23 +1346,6 @@ class SubLearnHandler(SimpleHTTPRequestHandler):
 
     def do_POST(self):
         parsed = urlparse(self.path)
-        if parsed.path == "/api/net-config":
-            try:
-                payload = self._read_json_body()
-                mode = payload.get("mode")
-                proxy = payload.get("proxy")
-                kwargs = {}
-                if mode is not None:
-                    kwargs["mode"] = str(mode)
-                if "proxy" in payload:
-                    kwargs["proxy"] = "" if proxy is None else str(proxy)
-                cfg = save_net_config(**kwargs)
-                self._json_response(200, cfg)
-            except ValueError as exc:
-                self._json_response(400, {"error": str(exc)})
-            except Exception as exc:  # noqa: BLE001
-                self._json_response(500, {"error": str(exc)})
-            return
         if parsed.path == "/api/vocab":
             try:
                 payload = self._read_json_body()
@@ -1637,13 +1433,10 @@ def main():
     host = os.environ.get("SUBLEARN_HOST", "127.0.0.1")
     port = int(os.environ.get("SUBLEARN_PORT", "8765"))
     init_vocab_db()
-    load_net_config()
     server = ThreadingHTTPServer((host, port), SubLearnHandler)
     print(f"SubLearn: http://127.0.0.1:{port}")
     print(f"AI: Ollama {OLLAMA_URL} model={OLLAMA_MODEL}")
     print(f"Vocab DB: {DB_PATH}")
-    cfg = get_net_config()
-    print(f"Net: mode={cfg.get('mode')} proxy={cfg.get('proxy') or '(none)'}")
     print("Остановка: Ctrl+C")
     server.serve_forever()
 

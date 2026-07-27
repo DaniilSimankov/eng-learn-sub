@@ -8,8 +8,6 @@ services:
     build: .
     ports:
       - "8765:8765"
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
     volumes:
       - ollama_data:/root/.ollama
       - vocab_data:/app/data
@@ -24,7 +22,6 @@ services:
       SUBLEARN_HOST: 0.0.0.0
       SUBLEARN_PORT: "8765"
       SUBLEARN_DATA_DIR: /app/data
-      SUBLEARN_IN_DOCKER: "1"
       OLLAMA_HOST: 127.0.0.1:11434
     restart: unless-stopped
 

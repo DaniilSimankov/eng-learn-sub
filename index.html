@@ -74,28 +74,6 @@
               Словарь хранится в SQLite внутри контейнера.
             </p>
           </div>
-          <div class="net-block">
-            <label class="control">
-              Сеть
-              <select id="net-mode">
-                <option value="direct" selected>Прямой трафик</option>
-                <option value="split">Сплит (VPN-прокси + прямой поток)</option>
-              </select>
-            </label>
-            <label class="control control--net-proxy" id="net-proxy-wrap">
-              Прокси VPN
-              <input type="text" id="net-proxy" class="url-input url-input--compact" placeholder="http://host.docker.internal:7890">
-            </label>
-            <div class="net-block__actions">
-              <button type="button" id="btn-net-check" class="btn btn--ghost btn--sm">Проверить</button>
-              <span id="net-status" class="net-status"></span>
-            </div>
-            <p class="hint hint--privacy">
-              Системный VPN выключите. Поднимите VPN как локальный HTTP-прокси.
-              В Docker указывайте <code>host.docker.internal</code>, не <code>127.0.0.1</code>.
-              В режиме «Сплит»: NewDeaf → прокси, поток ylitron → напрямую.
-            </p>
-          </div>
           <button type="button" id="btn-start-url" class="btn btn--primary" disabled>Открыть плеер</button>
         </div>
 
