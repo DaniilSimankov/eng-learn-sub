@@ -2,7 +2,7 @@
 # Web-модуль: ждёт Ollama, тянет модель через API, поднимает Python.
 set -euo pipefail
 
-MODEL="${SUBLEARN_OLLAMA_MODEL:-qwen3:4b}"
+MODEL="${SUBLEARN_OLLAMA_MODEL:-qwen2.5:7b}"
 OLLAMA_URL="${SUBLEARN_OLLAMA_URL:-http://ollama:11434}"
 OLLAMA_URL="${OLLAMA_URL%/}"
 
@@ -43,10 +43,10 @@ if ! model_present; then
   fi
 fi
 
-# Выгрузить прочие модели из RAM на стороне Ollama.
-python3 - "$OLLAMA_URL" "$MODEL" <<'PY' || true
+# Выгрузить ВСЕ модели из RAM: ИИ должен «спать», пока пользователь не нажмёт кнопку.
+python3 - "$OLLAMA_URL" <<'PY' || true
 import json, sys, urllib.request
-url, keep = sys.argv[1], sys.argv[2]
+url = sys.argv[1]
 try:
     tags = json.load(urllib.request.urlopen(url + "/api/tags", timeout=5))
 except Exception:
@@ -54,8 +54,6 @@ except Exception:
 for item in tags.get("models") or []:
     name = item.get("name") or item.get("model") or ""
     if not name:
-        continue
-    if name == keep or name.startswith(f"{keep}-") or name.startswith(f"{keep}:"):
         continue
     req = urllib.request.Request(
         url + "/api/generate",
@@ -69,12 +67,6 @@ for item in tags.get("models") or []:
         print(f"[web] unload {name} skipped: {exc}")
 PY
 
-echo "[web] warming ${MODEL}..."
-curl -sf --max-time 120 "${OLLAMA_URL}/api/chat" \
-  -H 'Content-Type: application/json' \
-  -d "{\"model\":\"${MODEL}\",\"stream\":false,\"think\":false,\"keep_alive\":\"${OLLAMA_KEEP_ALIVE:-10m}\",\"options\":{\"num_ctx\":512,\"num_predict\":8,\"num_thread\":${SUBLEARN_OLLAMA_NUM_THREAD:-2}},\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}" \
-  >/dev/null || echo "[web] warmup skipped"
-
-echo "[web] model ready: ${MODEL}"
+echo "[web] model on disk: ${MODEL} (cold — loads only on AI button)"
 echo "[web] starting on :${SUBLEARN_PORT:-8765}"
 exec python3 /app/server.py

@@ -735,8 +735,8 @@ def proxy_stream(url: str) -> Tuple[bytes, str]:
 OLLAMA_URL = os.environ.get("SUBLEARN_OLLAMA_URL", "http://ollama:11434").rstrip("/")
 # Одна универсальная модель; «два агента» = разные промпты/num_ctx (слова vs фразы).
 # Для qwen3 обязательно think:false в _chat_translate.
-OLLAMA_MODEL = os.environ.get("SUBLEARN_OLLAMA_MODEL", "qwen3:4b")
-OLLAMA_KEEP_ALIVE = os.environ.get("OLLAMA_KEEP_ALIVE", "10m")
+OLLAMA_MODEL = os.environ.get("SUBLEARN_OLLAMA_MODEL", "qwen2.5:7b")
+OLLAMA_KEEP_ALIVE = os.environ.get("OLLAMA_KEEP_ALIVE", "0")
 try:
     OLLAMA_NUM_THREAD = max(1, int(os.environ.get("SUBLEARN_OLLAMA_NUM_THREAD", "2")))
 except ValueError:
