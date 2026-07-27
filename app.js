@@ -1805,12 +1805,13 @@ function prefetchNeighborTranslations(cueIndex) {
 }
 
 function tokenizeToHtml(text) {
-  return text
-    .split(/(\s+|[^\w']+|'\w+)/)
+  // Слова с апострофом целиком: I'm, who's, don't (не «I» + «'m»).
+  return String(text || '')
+    .split(/(\s+|[^A-Za-z0-9'\s]+|[A-Za-z0-9]+(?:'[A-Za-z0-9]+)*)/)
     .filter(Boolean)
     .map((part) => {
       if (/^\s+$/.test(part)) return part;
-      if (/^[\w']+$/.test(part) && /[a-zA-Z]/.test(part)) {
+      if (/^[A-Za-z0-9]+(?:'[A-Za-z0-9]+)*$/.test(part) && /[a-zA-Z]/.test(part)) {
         return `<span class="word" data-word="${escapeAttr(part)}">${escapeHtml(part)}</span>`;
       }
       return escapeHtml(part);
@@ -1837,7 +1838,25 @@ function applyWordRange(from, to) {
     w.classList.toggle('is-active', on);
     w.classList.toggle('is-selected', on);
   });
-  return words.slice(a, b + 1).map((w) => w.dataset.word).join(' ');
+  return joinSelectedWords(words.slice(a, b + 1).map((w) => w.dataset.word));
+}
+
+function joinSelectedWords(parts) {
+  let out = '';
+  for (const raw of parts) {
+    const p = String(raw || '');
+    if (!p) continue;
+    if (!out) {
+      out = p;
+      continue;
+    }
+    if (/^'(?:[A-Za-z]+)$/.test(p) || /^(?:n't)$/i.test(p)) {
+      out += p;
+    } else {
+      out += ` ${p}`;
+    }
+  }
+  return out;
 }
 
 function bindWordClicks(sentence) {
@@ -2072,7 +2091,7 @@ async function translateWord(word, sentence = '') {
     return clean;
   }
   const ctx = sentence || state.lastPopupWord?.sentence || '';
-  const key = `word:v5:${clean.toLowerCase()}:${ctx}`;
+  const key = `word:v6:${clean.toLowerCase()}:${ctx}`;
   if (state.translationCache.has(key)) return state.translationCache.get(key);
   if (state.translationInflight.has(key)) return state.translationInflight.get(key);
 
