@@ -10,9 +10,28 @@ const QUALITY_LEVEL_KEY = 'sublearn-quality-level';
 const LEARN_PANEL_H_KEY = 'sublearn-learn-panel-h';
 const SUBS_SIZE_KEY = 'sublearn-subs-size';
 const SUBS_POS_KEY = 'sublearn-subs-pos';
+const PAGE_URL_KEY = 'sublearn-page-url';
+const SEEK_STEP_KEY = 'sublearn-seek-step';
 const LEARN_PANEL_H_DEFAULT = 200;
 const LEARN_PANEL_H_MIN = 140;
 const LEARN_PANEL_H_MAX_RATIO = 0.55;
+const SUBS_SIZE_DEFAULT_PCT = 100;
+
+function loadSeekStep() {
+  try {
+    const n = Number(localStorage.getItem(SEEK_STEP_KEY));
+    if (n === 5 || n === 10) return n;
+  } catch { /* ignore */ }
+  return 10;
+}
+
+function saveSeekStep(sec) {
+  const n = sec === 5 ? 5 : 10;
+  state.seekStep = n;
+  try {
+    localStorage.setItem(SEEK_STEP_KEY, String(n));
+  } catch { /* ignore */ }
+}
 
 const state = {
   mode: 'url', // 'url' | 'file'
@@ -24,6 +43,8 @@ const state = {
   lastPopupWord: null,
   wordAnchorIndex: null,
   wordDrag: null,
+  ignorePopupHideUntil: 0,
+  preferredVoiceURI: null,
   translationCache: new Map(),
   vocabulary: loadVocabulary(),
   resolved: null,
@@ -33,6 +54,7 @@ const state = {
   skipAds: loadSkipAdsPref(),
   onlineTranslation: loadOnlineTranslationPref(),
   subsScale: loadSubsScale(),
+  seekStep: loadSeekStep(),
   subsEditMode: false,
   subsDrag: null,
 };
@@ -94,13 +116,54 @@ const qualityTrackWrap = $('#quality-track-wrap');
 const qualityTrackSelect = $('#quality-track-select');
 const subtitleTrackWrap = $('#subtitle-track-wrap');
 const subtitleTrackSelect = $('#subtitle-track-select');
-const subsSizeSelect = $('#subs-size-select');
+const subsSizeRange = $('#subs-size-range');
+const subsSizeValue = $('#subs-size-value');
 const btnSubsEdit = $('#btn-subs-edit');
 const subtitlePanel = $('.subtitle-panel');
+const playerChrome = $('#player-chrome');
+const playerMenu = $('#player-menu');
+const chromePlay = $('#chrome-play');
+const chromeSeek = $('#chrome-seek');
+const chromeTime = $('#chrome-time');
+const chromeMute = $('#chrome-mute');
+const chromeVolume = $('#chrome-volume');
+const chromeMenuBtn = $('#chrome-menu-btn');
+const videoShell = $('#video-shell');
+const playerWrap = $('#player-wrap');
+const seekStepSelect = $('#seek-step-select');
+
+video.controls = false;
+
+if (seekStepSelect) {
+  seekStepSelect.value = String(state.seekStep);
+  seekStepSelect.addEventListener('change', () => {
+    saveSeekStep(Number(seekStepSelect.value));
+  });
+}
 
 if (skipAdsSetup) skipAdsSetup.checked = state.skipAds;
 if (skipAdsLive) skipAdsLive.checked = state.skipAds;
 if (onlineTranslationSetup) onlineTranslationSetup.checked = state.onlineTranslation;
+
+try {
+  const savedPageUrl = localStorage.getItem(PAGE_URL_KEY);
+  if (savedPageUrl && pageUrl) pageUrl.value = savedPageUrl;
+} catch { /* ignore */ }
+
+function savePageUrl(url) {
+  try {
+    if (url) localStorage.setItem(PAGE_URL_KEY, url);
+  } catch { /* ignore */ }
+}
+
+pageUrl?.addEventListener('change', () => {
+  const url = pageUrl.value.trim();
+  if (url) savePageUrl(url);
+});
+pageUrl?.addEventListener('blur', () => {
+  const url = pageUrl.value.trim();
+  if (url) savePageUrl(url);
+});
 
 // --- Mode tabs ---
 
@@ -635,41 +698,68 @@ bindSkipAdsToggle(skipAdsSetup);
 bindSkipAdsToggle(skipAdsLive);
 
 subtitleDisplay.addEventListener('click', (e) => {
-  if (e.target.classList.contains('word')) return;
-  if (state.subsEditMode) return;
-  translateCurrentLine();
+  // Фон строки больше не переводит реплику — только чекбокс «Перевод строки»
+  e.stopPropagation();
 });
 
 $('#popup-close').addEventListener('click', hidePopup);
 $('#popup-save').addEventListener('click', saveFromPopup);
 $('#popup-speak').addEventListener('click', speakPopupWord);
 document.addEventListener('click', (e) => {
-  if (!wordPopup.contains(e.target) && !e.target.classList.contains('word')) {
-    hidePopup();
-  }
+  if (Date.now() < state.ignorePopupHideUntil) return;
+  if (wordPopup.classList.contains('hidden')) return;
+  if (wordPopup.contains(e.target)) return;
+  if (e.target.closest?.('.word')) return;
+  if (subtitleDisplay.contains(e.target)) return;
+  hidePopup();
 });
 
 document.addEventListener('keydown', (e) => {
   if (playerSection.classList.contains('hidden')) return;
 
   const tag = (e.target?.tagName || '').toLowerCase();
-  const typing = tag === 'input' || tag === 'textarea' || tag === 'select' || e.target?.isContentEditable;
+  const inputType = (e.target?.type || '').toLowerCase();
+  // range/checkbox не считаем «печатанием» — пробел должен ставить на паузу
+  const typing = tag === 'textarea'
+    || tag === 'select'
+    || e.target?.isContentEditable
+    || (tag === 'input' && !['range', 'checkbox', 'radio', 'button'].includes(inputType));
 
   if ((e.code === 'Space' || e.key === ' ') && !typing) {
     e.preventDefault();
     e.stopPropagation();
     if (state.playbackMode === 'video') {
-      if (video.paused) video.play().catch(() => {});
-      else video.pause();
+      toggleVideoPlayback();
+      bumpChromeVisible();
     }
     return;
   }
 
-  if (state.playbackMode === 'iframe') {
-    if (e.key === 'ArrowLeft') { e.preventDefault(); stepCue(-1); }
-    if (e.key === 'ArrowRight') { e.preventDefault(); stepCue(1); }
+  if (e.key === 'Escape' && playerMenu && !playerMenu.classList.contains('hidden')) {
+    closePlayerMenu();
+    return;
+  }
+
+  if (typing) return;
+
+  if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+    e.preventDefault();
+    if (state.playbackMode === 'video') {
+      seekVideoBy((e.key === 'ArrowRight' ? 1 : -1) * state.seekStep);
+    } else if (state.playbackMode === 'iframe') {
+      stepCue(e.key === 'ArrowRight' ? 1 : -1);
+    }
   }
 }, true);
+
+function seekVideoBy(deltaSec) {
+  if (state.playbackMode !== 'video') return;
+  const dur = Number.isFinite(video.duration) ? video.duration : Infinity;
+  const next = Math.min(Math.max(0, video.currentTime + deltaSec), dur);
+  video.currentTime = next;
+  syncChromeSeek();
+  bumpChromeVisible();
+}
 
 $('#btn-vocab').addEventListener('click', () => vocabDrawer.classList.remove('hidden'));
 $('#vocab-close').addEventListener('click', () => vocabDrawer.classList.add('hidden'));
@@ -677,14 +767,20 @@ $('#vocab-backdrop').addEventListener('click', () => vocabDrawer.classList.add('
 $('#vocab-clear').addEventListener('click', clearVocabulary);
 $('#vocab-export').addEventListener('click', exportVocabulary);
 
-if (subsSizeSelect) {
-  subsSizeSelect.value = String(state.subsScale);
+if (subsSizeRange) {
+  const pct = Math.round(state.subsScale * 100);
+  subsSizeRange.value = String(pct);
+  if (subsSizeValue) subsSizeValue.textContent = `${pct}%`;
   applySubsScale(state.subsScale);
-  subsSizeSelect.addEventListener('change', () => {
-    const scale = Number(subsSizeSelect.value) || 1;
+  const onSizeInput = () => {
+    const percent = Number(subsSizeRange.value) || SUBS_SIZE_DEFAULT_PCT;
+    if (subsSizeValue) subsSizeValue.textContent = `${percent}%`;
+    const scale = percent / 100;
     applySubsScale(scale);
     saveSubsScale(scale);
-  });
+  };
+  subsSizeRange.addEventListener('input', onSizeInput);
+  subsSizeRange.addEventListener('change', onSizeInput);
 }
 
 btnSubsEdit?.addEventListener('click', () => {
@@ -696,6 +792,200 @@ btnSubsEdit?.addEventListener('click', () => {
 });
 
 initSubsPanelDrag();
+
+// --- Custom player chrome ---
+
+const CHROME_IDLE_MS = 2500;
+let chromeIdleTimer = null;
+let chromeSeeking = false;
+
+function formatChromeTime(sec) {
+  if (!Number.isFinite(sec) || sec < 0) sec = 0;
+  const h = Math.floor(sec / 3600);
+  const m = Math.floor((sec % 3600) / 60);
+  const s = Math.floor(sec % 60);
+  if (h > 0) return `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+  return `${m}:${String(s).padStart(2, '0')}`;
+}
+
+function syncChromePlayIcon() {
+  if (!chromePlay) return;
+  chromePlay.textContent = video.paused ? '▶' : '⏸';
+  chromePlay.title = video.paused ? 'Play' : 'Pause';
+}
+
+function syncChromeMuteIcon() {
+  if (!chromeMute) return;
+  const muted = video.muted || video.volume === 0;
+  chromeMute.textContent = muted ? '🔇' : '🔊';
+}
+
+function syncChromeSeek() {
+  if (!chromeSeek || chromeSeeking) return;
+  const dur = video.duration;
+  if (!Number.isFinite(dur) || dur <= 0) {
+    chromeSeek.value = '0';
+    if (chromeTime) chromeTime.textContent = `${formatChromeTime(video.currentTime)} / —`;
+    return;
+  }
+  chromeSeek.value = String(Math.round((video.currentTime / dur) * 1000));
+  if (chromeTime) {
+    chromeTime.textContent = `${formatChromeTime(video.currentTime)} / ${formatChromeTime(dur)}`;
+  }
+}
+
+function syncChromeUI() {
+  syncChromePlayIcon();
+  syncChromeMuteIcon();
+  syncChromeSeek();
+  if (chromeVolume) chromeVolume.value = String(video.muted ? 0 : video.volume);
+}
+
+function bumpChromeVisible() {
+  if (!playerChrome) return;
+  playerChrome.classList.add('is-chrome-visible');
+  playerChrome.classList.remove('is-chrome-idle');
+  clearTimeout(chromeIdleTimer);
+  if (playerChrome.classList.contains('is-menu-open')) return;
+  if (state.playbackMode === 'video' && video.paused) return;
+  chromeIdleTimer = setTimeout(() => {
+    if (playerChrome.classList.contains('is-menu-open')) return;
+    if (state.playbackMode === 'video' && video.paused) return;
+    playerChrome.classList.add('is-chrome-idle');
+    playerChrome.classList.remove('is-chrome-visible');
+  }, CHROME_IDLE_MS);
+}
+
+function openPlayerMenu() {
+  if (!playerMenu || !playerChrome) return;
+  playerMenu.classList.remove('hidden');
+  playerChrome.classList.add('is-menu-open');
+  playerSection.classList.add('is-menu-open');
+  chromeMenuBtn?.setAttribute('aria-expanded', 'true');
+  bumpChromeVisible();
+}
+
+function closePlayerMenu() {
+  if (!playerMenu || !playerChrome) return;
+  playerMenu.classList.add('hidden');
+  playerChrome.classList.remove('is-menu-open');
+  playerSection.classList.remove('is-menu-open');
+  chromeMenuBtn?.setAttribute('aria-expanded', 'false');
+  bumpChromeVisible();
+}
+
+function togglePlayerMenu() {
+  if (!playerMenu) return;
+  if (playerMenu.classList.contains('hidden')) openPlayerMenu();
+  else closePlayerMenu();
+}
+
+function toggleVideoPlayback() {
+  if (state.playbackMode !== 'video') return;
+  if (video.paused) video.play().catch(() => {});
+  else video.pause();
+}
+
+function initPlayerChrome() {
+  if (!playerChrome) return;
+
+  chromePlay?.addEventListener('click', (e) => {
+    e.stopPropagation();
+    toggleVideoPlayback();
+    bumpChromeVisible();
+  });
+
+  chromeSeek?.addEventListener('pointerdown', () => {
+    chromeSeeking = true;
+    bumpChromeVisible();
+  });
+  chromeSeek?.addEventListener('input', () => {
+    const dur = video.duration;
+    if (!Number.isFinite(dur) || dur <= 0) return;
+    const t = (Number(chromeSeek.value) / 1000) * dur;
+    if (chromeTime) {
+      chromeTime.textContent = `${formatChromeTime(t)} / ${formatChromeTime(dur)}`;
+    }
+  });
+  const commitSeek = () => {
+    const dur = video.duration;
+    if (Number.isFinite(dur) && dur > 0) {
+      video.currentTime = (Number(chromeSeek.value) / 1000) * dur;
+    }
+    chromeSeeking = false;
+    syncChromeSeek();
+    bumpChromeVisible();
+  };
+  chromeSeek?.addEventListener('change', commitSeek);
+  chromeSeek?.addEventListener('pointerup', commitSeek);
+
+  chromeMute?.addEventListener('click', (e) => {
+    e.stopPropagation();
+    video.muted = !video.muted;
+    if (!video.muted && video.volume === 0) video.volume = 0.5;
+    syncChromeUI();
+    bumpChromeVisible();
+  });
+
+  chromeVolume?.addEventListener('input', () => {
+    const v = Number(chromeVolume.value);
+    video.volume = v;
+    video.muted = v === 0;
+    syncChromeMuteIcon();
+    bumpChromeVisible();
+  });
+
+  chromeMenuBtn?.addEventListener('click', (e) => {
+    e.stopPropagation();
+    togglePlayerMenu();
+  });
+
+  playerMenu?.addEventListener('click', (e) => e.stopPropagation());
+
+  document.addEventListener('click', (e) => {
+    if (!playerMenu || playerMenu.classList.contains('hidden')) return;
+    if (playerMenu.contains(e.target)) return;
+    if (chromeMenuBtn?.contains(e.target)) return;
+    closePlayerMenu();
+  });
+
+  playerWrap?.addEventListener('mousemove', bumpChromeVisible);
+  playerWrap?.addEventListener('pointerdown', bumpChromeVisible);
+  playerChrome.addEventListener('mouseenter', bumpChromeVisible);
+
+  videoShell?.addEventListener('click', (e) => {
+    if (e.target.closest?.('.player-chrome')) return;
+    if (e.target.closest?.('.word')) return;
+    if (state.playbackMode !== 'video') return;
+    toggleVideoPlayback();
+    bumpChromeVisible();
+  });
+
+  video.addEventListener('play', () => {
+    syncChromePlayIcon();
+    bumpChromeVisible();
+  });
+  video.addEventListener('pause', () => {
+    syncChromePlayIcon();
+    bumpChromeVisible();
+  });
+  video.addEventListener('volumechange', () => {
+    syncChromeMuteIcon();
+    if (chromeVolume && !chromeSeeking) {
+      chromeVolume.value = String(video.muted ? 0 : video.volume);
+    }
+  });
+  video.addEventListener('loadedmetadata', syncChromeUI);
+  video.addEventListener('durationchange', syncChromeUI);
+  video.addEventListener('timeupdate', () => {
+    syncChromeSeek();
+  });
+
+  syncChromeUI();
+  bumpChromeVisible();
+}
+
+initPlayerChrome();
 
 video.addEventListener('timeupdate', onTimeUpdate);
 video.addEventListener('seeked', onTimeUpdate);
@@ -713,6 +1003,7 @@ async function resolvePageUrl() {
     setStatus('Вставьте ссылку на страницу серии', true);
     return;
   }
+  savePageUrl(url);
 
   setStatus('Ищу Ylitron ID на странице NewDeaf…');
   btnResolve.disabled = true;
@@ -816,7 +1107,7 @@ function setStatus(text, isError = false, isOk = false) {
 
 async function loadSubsFile(file, labelEl) {
   state.subsFile = file || null;
-  labelEl.textContent = file?.name || (labelEl === subsNameUrl ? 'Не выбрано — можно добавить позже' : 'Не выбрано');
+  labelEl.textContent = file?.name || (labelEl === subsNameUrl ? 'Не выбрано — позже' : 'Не выбрано');
   if (file) {
     const text = await file.text();
     state.cues = parseSubtitles(text, file.name);
@@ -839,13 +1130,17 @@ function startFilePlayer() {
   if (!state.videoFile || !state.cues.length) return;
   state.playbackMode = 'video';
   setupPlayerUI();
+  video.controls = false;
   video.src = URL.createObjectURL(state.videoFile);
   video.classList.remove('hidden');
   embedFrame.classList.add('hidden');
   iframeNotice.classList.add('hidden');
+  setIframeControls(false);
   playerTitle.textContent = state.videoFile.name;
   resetSubtitleState();
   video.playbackRate = parseFloat(speedSelect.value);
+  syncChromeUI();
+  bumpChromeVisible();
 }
 
 function showPlaybackError(message) {
@@ -958,6 +1253,7 @@ async function startUrlPlayer() {
     if (await tryPlayStream(streamUrl)) {
       hidePlayerLoading();
       state.playbackMode = 'video';
+      video.controls = false;
       video.classList.remove('hidden');
       embedFrame.classList.add('hidden');
       iframeNotice.classList.add('hidden');
@@ -965,6 +1261,8 @@ async function startUrlPlayer() {
       renderAudioTrackUI();
       syncAudioTracksUI();
       syncQualityUI();
+      syncChromeUI();
+      bumpChromeVisible();
 
       if (state.subsFile && state.cues.length) {
         subsNameUrl.textContent = `${state.subsFile.name} (${state.cues.length} реплик)`;
@@ -1000,6 +1298,7 @@ async function startUrlPlayer() {
     setIframeControls(true);
     subtitleHint.textContent = 'Плеер 1 — встроенный iframe. Загрузите .srt/.vtt и листайте реплики ← →.';
     loadIframePlayer(iframeUrl);
+    bumpChromeVisible();
   } else {
     hidePlayerLoading();
     showPlaybackError('Плеер недоступен. Обновите ссылку кнопкой «Загрузить».');
@@ -1034,6 +1333,7 @@ function setupPlayerUI() {
 }
 
 function setIframeControls(show) {
+  playerSection.classList.toggle('is-iframe-mode', show);
   $$('.control--iframe-only').forEach((el) => el.classList.toggle('hidden', !show));
   $$('.control--video-only').forEach((el) => {
     if (el.id === 'audio-track-wrap' || el.id === 'subtitle-track-wrap' || el.id === 'quality-track-wrap') return;
@@ -1046,6 +1346,8 @@ function setIframeControls(show) {
     hideSubtitleTrackUI();
     hideQualityUI();
   }
+  closePlayerMenu();
+  bumpChromeVisible();
 }
 
 async function tryPlayStream(url) {
@@ -1144,6 +1446,7 @@ function resetSubtitleState() {
 }
 
 function backToSetup() {
+  closePlayerMenu();
   exitLearnFullscreen();
   video.pause();
   clearIframeLoadTimer();
@@ -1209,6 +1512,7 @@ function syncLearnFullscreenUI() {
     applySubsPosition(loadSubsPosition());
     applySubsScale(state.subsScale);
   }
+  bumpChromeVisible();
 }
 
 function initLearnPanelResize() {
@@ -1267,10 +1571,6 @@ async function toggleLearnFullscreen() {
   if (isLearnFullscreen()) {
     await exitLearnFullscreen();
     return;
-  }
-  if (showRuInline && !showRuInline.checked) {
-    showRuInline.checked = true;
-    showRuInline.dispatchEvent(new Event('change'));
   }
   try {
     if (playerSection.requestFullscreen) {
@@ -1431,14 +1731,17 @@ function renderCurrentCue() {
   subtitleMeta.textContent = `#${state.currentCueIndex + 1} / ${state.cues.length} · ${formatTime(cue.start)} → ${formatTime(cue.end)}`;
 
   if (showRuInline.checked) {
+    subtitleTranslation.textContent = '…';
+    subtitleTranslation.classList.remove('hidden');
     translateText(cue.text).then((ru) => {
-      if (state.cues[state.currentCueIndex]?.text === cue.text) {
+      if (state.cues[state.currentCueIndex]?.text === cue.text && showRuInline.checked) {
         subtitleTranslation.textContent = ru;
         subtitleTranslation.classList.remove('hidden');
       }
     });
   } else {
     subtitleTranslation.classList.add('hidden');
+    subtitleTranslation.textContent = '';
   }
 }
 
@@ -1488,9 +1791,12 @@ function bindWordClicks(sentence) {
       if (e.button !== 0 || state.subsEditMode) return;
       e.preventDefault();
       e.stopPropagation();
-      state.wordDrag = { start: idx, end: idx, sentence };
+      try { el.setPointerCapture?.(e.pointerId); } catch { /* ignore */ }
+      state.wordDrag = { start: idx, end: idx, sentence, pointerId: e.pointerId };
       if (e.shiftKey && state.wordAnchorIndex != null) {
         applyWordRange(state.wordAnchorIndex, idx);
+        state.wordDrag.start = state.wordAnchorIndex;
+        state.wordDrag.end = idx;
       } else {
         state.wordAnchorIndex = idx;
         applyWordRange(idx, idx);
@@ -1512,26 +1818,44 @@ function ensureWordDragListeners() {
   document.addEventListener('pointermove', (e) => {
     if (!state.wordDrag) return;
     const words = getCueWordEls();
+    if (!words.length) return;
     const el = document.elementFromPoint(e.clientX, e.clientY);
     const wordEl = el?.closest?.('.word');
     if (!wordEl || !subtitleDisplay.contains(wordEl)) return;
     const idx = words.indexOf(wordEl);
-    if (idx < 0) return;
+    if (idx < 0 || idx === state.wordDrag.end) return;
     state.wordDrag.end = idx;
     applyWordRange(state.wordDrag.start, idx);
   });
+
+  document.addEventListener('pointerup', onWordPointerEnd);
+  document.addEventListener('pointercancel', onWordPointerEnd);
+}
+
+async function onWordPointerEnd(e) {
+  if (!state.wordDrag) return;
+  if (e?.pointerId != null && state.wordDrag.pointerId != null
+      && e.pointerId !== state.wordDrag.pointerId) return;
+
+  const { sentence, start, end } = state.wordDrag;
+  state.wordDrag = null;
+  const from = Math.min(start, end);
+  const to = Math.max(start, end);
+  state.wordAnchorIndex = from;
+  const phrase = applyWordRange(from, to);
+  if (!phrase) return;
+  state.ignorePopupHideUntil = Date.now() + 400;
+  await finishWordSelection(phrase, sentence, from, to);
 }
 
 ensureWordDragListeners();
 
-async function finishWordSelection(sentence) {
+async function finishWordSelection(phrase, sentence, from, to) {
   const words = getCueWordEls();
-  const selected = words.filter((w) => w.classList.contains('is-selected'));
-  if (!selected.length) return;
+  if (!phrase || !words.length) return;
 
-  const phrase = selected.map((w) => w.dataset.word).join(' ');
-  const first = selected[0];
-  const last = selected[selected.length - 1];
+  const first = words[from] || words[0];
+  const last = words[to] || first;
   const rect = first.getBoundingClientRect();
   const rect2 = last.getBoundingClientRect();
   const union = {
@@ -1613,25 +1937,12 @@ function splitTranslationNote(raw) {
 }
 
 function buildTranslationContext(phrase, sentence) {
+  // В модель — только текущая реплика (для выбора значения слова).
+  // Соседние реплики путали маленькую модель: она переводила их вместо слова.
   const idx = state.currentCueIndex;
   const current = (sentence || state.cues[idx]?.text || '').trim();
-  const parts = [];
-  if (idx > 0) parts.push(state.cues[idx - 1].text.trim());
-  if (current) parts.push(current);
-  if (idx >= 0 && idx < state.cues.length - 1) parts.push(state.cues[idx + 1].text.trim());
-  const joined = parts.filter(Boolean).join(' / ');
-  return joined || phrase || current;
+  return current || phrase || '';
 }
-
-document.addEventListener('pointerup', async () => {
-  if (!state.wordDrag) return;
-  const { sentence } = state.wordDrag;
-  const start = state.wordDrag.start;
-  const end = state.wordDrag.end;
-  state.wordDrag = null;
-  state.wordAnchorIndex = Math.min(start, end);
-  await finishWordSelection(sentence);
-});
 
 function hidePopup() {
   wordPopup.classList.add('hidden');
@@ -1640,14 +1951,6 @@ function hidePopup() {
     popupTranslationNote.classList.add('hidden');
   }
   clearWordSelection();
-}
-
-async function translateCurrentLine() {
-  if (state.currentCueIndex < 0) return;
-  const cue = state.cues[state.currentCueIndex];
-  subtitleTranslation.textContent = 'Перевод…';
-  subtitleTranslation.classList.remove('hidden');
-  subtitleTranslation.textContent = await translateText(cue.text);
 }
 
 function replayCurrentLine() {
@@ -1699,10 +2002,75 @@ async function translateWord(word, sentence = '') {
   }
 }
 
+function pickEnglishVoice() {
+  const voices = window.speechSynthesis?.getVoices?.() || [];
+  if (!voices.length) return null;
+
+  if (state.preferredVoiceURI) {
+    const saved = voices.find((v) => v.voiceURI === state.preferredVoiceURI);
+    if (saved) return saved;
+  }
+
+  const en = voices.filter((v) => /^en([-_]|$)/i.test(v.lang || ''));
+  const pool = en.length ? en : voices;
+
+  const preferred = [
+    /google us english/i,
+    /google uk english female/i,
+    /google uk english/i,
+    /microsoft aria/i,
+    /microsoft jenny/i,
+    /microsoft guy/i,
+    /microsoft ryan/i,
+    /samantha/i,
+    /karen/i,
+    /daniel/i,
+    /moira/i,
+    /enhanced/i,
+    /premium/i,
+    /neural/i,
+  ];
+
+  for (const re of preferred) {
+    const hit = pool.find((v) => re.test(v.name));
+    if (hit) {
+      state.preferredVoiceURI = hit.voiceURI;
+      return hit;
+    }
+  }
+
+  const us = pool.find((v) => /^en-US/i.test(v.lang));
+  const pick = us || pool[0] || null;
+  if (pick) state.preferredVoiceURI = pick.voiceURI;
+  return pick;
+}
+
+if (typeof speechSynthesis !== 'undefined') {
+  const refreshVoices = () => {
+    state.preferredVoiceURI = null;
+    pickEnglishVoice();
+  };
+  speechSynthesis.addEventListener?.('voiceschanged', refreshVoices);
+  speechSynthesis.onvoiceschanged = refreshVoices;
+  pickEnglishVoice();
+}
+
 function speakPopupWord() {
-  if (!state.lastPopupWord) return;
-  const utter = new SpeechSynthesisUtterance(state.lastPopupWord.word);
-  utter.lang = 'en-US';
+  if (!state.lastPopupWord || typeof speechSynthesis === 'undefined') return;
+  const text = state.lastPopupWord.word;
+  if (!text) return;
+
+  speechSynthesis.cancel();
+  const utter = new SpeechSynthesisUtterance(text);
+  const voice = pickEnglishVoice();
+  if (voice) {
+    utter.voice = voice;
+    utter.lang = voice.lang || 'en-US';
+  } else {
+    utter.lang = 'en-US';
+  }
+  utter.rate = 0.92;
+  utter.pitch = 1;
   speechSynthesis.speak(utter);
 }
 
@@ -1787,16 +2155,20 @@ function formatTime(sec) {
 
 function loadSubsScale() {
   try {
-    const n = Number(localStorage.getItem(SUBS_SIZE_KEY));
-    if ([0.85, 1, 1.2, 1.45].includes(n)) return n;
+    const raw = localStorage.getItem(SUBS_SIZE_KEY);
+    const n = Number(raw);
+    if (!Number.isFinite(n)) return SUBS_SIZE_DEFAULT_PCT / 100;
+    // Поддержка старых пресетов (0.85–1.45) и процентов (50–200)
+    if (n >= 50 && n <= 200) return n / 100;
+    if (n >= 0.5 && n <= 2.5) return n;
   } catch { /* ignore */ }
-  return 1;
+  return SUBS_SIZE_DEFAULT_PCT / 100;
 }
 
 function saveSubsScale(scale) {
   state.subsScale = scale;
   try {
-    localStorage.setItem(SUBS_SIZE_KEY, String(scale));
+    localStorage.setItem(SUBS_SIZE_KEY, String(Math.round(scale * 100)));
   } catch { /* ignore */ }
 }
 

@@ -12,7 +12,7 @@ COPY entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh && sed -i 's/\r$//' /entrypoint.sh
 
 ENV SUBLEARN_OLLAMA_URL=http://127.0.0.1:11434
-ENV SUBLEARN_OLLAMA_MODEL=llama3.2:3b
+ENV SUBLEARN_OLLAMA_MODEL=qwen2.5:3b
 ENV SUBLEARN_HOST=0.0.0.0
 ENV SUBLEARN_PORT=8765
 ENV OLLAMA_HOST=127.0.0.1:11434

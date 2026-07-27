@@ -706,8 +706,8 @@ def proxy_stream(url: str) -> Tuple[bytes, str]:
 
 
 OLLAMA_URL = os.environ.get("SUBLEARN_OLLAMA_URL", "http://127.0.0.1:11434").rstrip("/")
-# 3B хватает для коротких EN→RU переводов; 7B в Docker на Mac (без Metal) очень медленный
-OLLAMA_MODEL = os.environ.get("SUBLEARN_OLLAMA_MODEL", "llama3.2:3b")
+# Qwen2.5 3B лучше держит EN→RU, чем llama3.2; 7B+ в Docker на Mac (без Metal) очень медленный
+OLLAMA_MODEL = os.environ.get("SUBLEARN_OLLAMA_MODEL", "qwen2.5:3b")
 
 
 def _ollama_request(path: str, payload: Optional[dict] = None, timeout: int = 60):
@@ -769,35 +769,45 @@ def ollama_translate(text: str, *, word: Optional[str] = None, sentence: Optiona
 
     if word:
         target = word.strip()
-        ctx = (sentence or cleaned).strip()
+        ctx = (sentence or "").strip()
+        # Одна реплика — только для выбора значения; соседние реплики не передаём.
+        if len(ctx) > 280:
+            ctx = ctx[:280].rsplit(" ", 1)[0]
         system = (
-            "You are an English learning assistant. Reply ONLY in Russian (Cyrillic). "
-            "Never use Chinese, Japanese, Korean, or other non-Russian scripts. "
-            "Format strictly:\n"
-            "1) First line: short translation of the Phrase in context.\n"
-            "2) Optional second line starting with 'Примечание:' — one short clarifying note.\n"
-            "Use neighboring lines in Context when the Phrase is incomplete. "
-            "No quotes, no preamble, no markdown."
+            "You are a bilingual dictionary, not a chat assistant. "
+            "Translate ONLY the English Phrase into Russian. "
+            "The Context line is solely for sense disambiguation — never translate it, "
+            "never quote it, never continue it. "
+            "Reply with one short Russian equivalent (a word or short phrase). "
+            "No full sentences unless the Phrase itself is a full sentence. "
+            "No notes, no Примечание, no explanations, no markdown, no quotes, "
+            "no Chinese/Japanese/Korean. Cyrillic Russian only."
         )
-        user = f"Context: {ctx}\nPhrase: {target}"
-        num_predict = 100
+        user = (
+            f"Phrase: {target}\n"
+            f"Context (do not translate): {ctx or '(none)'}"
+        )
+        num_predict = 40
+        temperature = 0
     else:
         system = (
-            "You translate English subtitles to natural Russian. "
-            "Reply with ONLY the Russian translation. "
-            "Cyrillic only — no Chinese/Japanese/Korean, no quotes, no notes."
+            "Translate the English subtitle line into natural Russian. "
+            "Reply with ONLY the Russian translation of that line. "
+            "Cyrillic only — no notes, no quotes, no Chinese/Japanese/Korean."
         )
         user = cleaned
         num_predict = 60
+        temperature = 0.1
 
     payload = {
         "model": OLLAMA_MODEL,
         "stream": False,
         "keep_alive": "30m",
         "options": {
-            "temperature": 0.1,
+            "temperature": temperature,
+            "top_p": 0.9,
             "num_predict": num_predict,
-            "num_ctx": 512,
+            "num_ctx": 1024,
         },
         "messages": [
             {"role": "system", "content": system},
@@ -811,10 +821,36 @@ def ollama_translate(text: str, *, word: Optional[str] = None, sentence: Optiona
         raise RuntimeError(f"Ollama HTTP {exc.code}: {body[:200]}") from exc
 
     msg = (data.get("message") or {}).get("content") or ""
-    result = msg.strip()
+    result = _clean_translation(msg)
     if not result:
         raise RuntimeError("Пустой ответ модели")
     return result
+
+
+def _clean_translation(raw: str) -> str:
+    """Убирает типичные галлюцинации: примечания, кавычки, лишний текст."""
+    text = (raw or "").strip()
+    if not text:
+        return ""
+
+    # Берём только первую содержательную строку до «Примечание»
+    lines = []
+    for line in text.replace("\r\n", "\n").split("\n"):
+        s = line.strip().strip("\"'`«»")
+        if not s:
+            continue
+        if re.match(r"(?i)^примечание\s*[:：]", s):
+            break
+        if re.match(r"(?i)^(note|context|phrase)\s*[:：]", s):
+            continue
+        lines.append(s)
+        break  # только первая строка-перевод
+
+    result = lines[0] if lines else text.split("\n", 1)[0].strip().strip("\"'`«»")
+
+    # Если модель вставила «Примечание:» в ту же строку
+    result = re.split(r"(?i)\s+примечание\s*[:：].*$", result, maxsplit=1)[0].strip()
+    return result.strip()
 
 
 class SubLearnHandler(SimpleHTTPRequestHandler):

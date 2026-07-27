@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-MODEL="${SUBLEARN_OLLAMA_MODEL:-llama3.2:3b}"
+MODEL="${SUBLEARN_OLLAMA_MODEL:-qwen2.5:3b}"
 OLLAMA_URL="${SUBLEARN_OLLAMA_URL:-http://127.0.0.1:11434}"
 
 echo "[sublearn] starting ollama..."

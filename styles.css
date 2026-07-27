@@ -247,9 +247,38 @@ body {
 
 .upload-card--inline {
   flex-direction: row;
+  align-items: center;
   justify-content: flex-start;
-  margin-bottom: 1rem;
-  padding: 1rem 1.25rem;
+  gap: 0.55rem;
+  width: fit-content;
+  max-width: 100%;
+  margin-bottom: 0.85rem;
+  padding: 0.45rem 0.75rem;
+  border-width: 1px;
+}
+
+.upload-card--inline .upload-card__icon {
+  font-size: 1.05rem;
+  line-height: 1;
+}
+
+.upload-card--inline .upload-card__body {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+  min-width: 0;
+}
+
+.upload-card--inline .upload-card__title {
+  font-size: 0.85rem;
+  font-weight: 600;
+  line-height: 1.2;
+}
+
+.upload-card--inline .upload-card__name {
+  font-size: 0.72rem;
+  text-align: left;
+  word-break: break-word;
 }
 
 .player-title-row {
@@ -371,13 +400,15 @@ body {
 }
 
 .hint--privacy {
-  font-size: 0.82rem;
-  margin-top: -0.75rem;
-  margin-bottom: 1.25rem;
-  padding: 0.65rem 0.85rem;
-  background: var(--surface-2);
-  border-radius: 8px;
-  border-left: 3px solid var(--accent);
+  font-size: 0.78rem;
+  line-height: 1.4;
+  margin: 0;
+  max-width: none;
+  padding: 0;
+  background: none;
+  border-radius: 0;
+  border-left: none;
+  color: var(--text-muted);
 }
 
 .hint--privacy code {
@@ -387,15 +418,45 @@ body {
   border-radius: 4px;
 }
 
-.ai-status {
-  display: inline-block;
-  margin-left: 0.4rem;
-  font-size: 0.75rem;
-  padding: 0.1rem 0.45rem;
-  border-radius: 999px;
+.ai-block {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  margin-bottom: 1.25rem;
+  padding: 0.7rem 0.85rem;
   background: var(--surface-2);
+  border-radius: 8px;
+  border-left: 3px solid var(--accent);
+  max-width: 520px;
+}
+
+.control--privacy {
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.45rem 0.55rem;
+  margin: 0;
+  font-size: 0.9rem;
+  color: var(--text);
+}
+
+.control--privacy .control__text {
+  min-width: 0;
+}
+
+.ai-status {
+  display: inline-flex;
+  align-items: center;
+  max-width: 100%;
+  margin-left: 0;
+  font-size: 0.72rem;
+  line-height: 1.2;
+  padding: 0.15rem 0.5rem;
+  border-radius: 6px;
+  background: var(--surface);
   color: var(--text-muted);
-  vertical-align: middle;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .ai-status.is-ok {
@@ -462,6 +523,17 @@ body {
   min-height: min(56vh, 520px);
 }
 
+.video-shell {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  min-height: inherit;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #000;
+}
+
 .player-loading {
   position: absolute;
   inset: 0;
@@ -471,7 +543,7 @@ body {
   background: rgba(0, 0, 0, 0.85);
   color: var(--text-muted);
   font-size: 0.95rem;
-  z-index: 2;
+  z-index: 4;
 }
 
 #video {
@@ -491,15 +563,113 @@ body {
   box-shadow: none;
 }
 
-.controls-bar {
+/* --- Custom player chrome --- */
+
+.player-chrome {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 5;
+  padding: 0.45rem 0.65rem 0.55rem;
+  background: linear-gradient(transparent, rgba(0, 0, 0, 0.82));
+  pointer-events: none;
+  opacity: 1;
+  transition: opacity 0.25s ease;
+}
+
+.player-chrome.is-chrome-idle:not(.is-menu-open) {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.player-chrome.is-chrome-idle:not(.is-menu-open) .player-chrome__row,
+.player-chrome.is-chrome-idle:not(.is-menu-open) .player-menu {
+  pointer-events: none;
+}
+
+.player-chrome__row {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  pointer-events: auto;
+}
+
+.chrome-btn {
+  flex: 0 0 auto;
+  width: 2rem;
+  height: 2rem;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: #fff;
+  font-size: 0.95rem;
+  line-height: 1;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.chrome-btn:hover {
+  background: rgba(255, 255, 255, 0.12);
+}
+
+.chrome-seek {
+  flex: 1 1 auto;
+  min-width: 4rem;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+.chrome-volume {
+  flex: 0 0 4.5rem;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+.chrome-time {
+  flex: 0 0 auto;
+  font-size: 0.75rem;
+  font-variant-numeric: tabular-nums;
+  color: rgba(255, 255, 255, 0.85);
+  white-space: nowrap;
+  min-width: 5.5rem;
+}
+
+.player-menu {
+  position: absolute;
+  right: 0.65rem;
+  bottom: calc(100% + 0.35rem);
+  z-index: 6;
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+  min-width: min(280px, calc(100vw - 2rem));
+  max-height: min(60vh, 420px);
+  overflow-y: auto;
+  padding: 0.75rem 0.85rem;
+  background: rgba(18, 20, 28, 0.96);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: var(--shadow);
+  pointer-events: auto;
+}
+
+.player-menu .control {
+  width: 100%;
+  justify-content: space-between;
+  color: var(--text);
+}
+
+.player-menu .menu-row {
   display: flex;
   flex-wrap: wrap;
-  gap: 1rem;
-  align-items: center;
-  margin: 1rem 0;
-  padding: 0.75rem 1rem;
-  background: var(--surface);
-  border-radius: var(--radius);
+  gap: 0.4rem;
+}
+
+.player-section.is-iframe-mode .player-chrome__row .control--video-only {
+  display: none !important;
 }
 
 .control {
@@ -539,8 +709,9 @@ body {
   padding: 1rem;
   background: var(--bg);
   border-radius: 8px;
-  cursor: pointer;
+  cursor: default;
   user-select: none;
+  touch-action: none;
 }
 
 .subtitle-display .word {
@@ -572,13 +743,35 @@ body {
 }
 
 .subtitle-translation {
-  margin-top: 0.75rem;
-  padding: 0.75rem 1rem;
+  margin: 0 0 0.5rem;
+  padding: 0.65rem 1rem;
+  min-height: 2.6em;
+  box-sizing: border-box;
   background: rgba(108, 140, 255, 0.12);
   border-left: 3px solid var(--accent);
   border-radius: 0 8px 8px 0;
-  font-size: 1.05rem;
+  font-size: calc(1.05rem * var(--subs-scale, 1));
+  line-height: 1.35;
   color: #c5d0ff;
+  text-align: center;
+}
+
+.control--subs-size {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.control--subs-size input[type="range"] {
+  width: 7rem;
+  accent-color: var(--accent);
+  vertical-align: middle;
+}
+
+#subs-size-value {
+  min-width: 2.75rem;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-muted);
 }
 
 .subtitle-meta {
@@ -737,9 +930,8 @@ body {
 }
 
 @media (max-width: 600px) {
-  .controls-bar {
-    flex-direction: column;
-    align-items: stretch;
+  .chrome-volume {
+    display: none;
   }
 
   .player-title-row {
@@ -781,6 +973,15 @@ body {
   align-items: center;
   justify-content: center;
   z-index: 1;
+  min-height: 0;
+}
+
+.player-section:fullscreen .video-shell,
+.player-section:-webkit-full-screen .video-shell,
+.player-section.is-learn-fs .video-shell {
+  position: absolute;
+  inset: 0;
+  min-height: 0;
 }
 
 .player-section:fullscreen #video,
@@ -820,24 +1021,30 @@ body {
   display: block;
 }
 
-.player-section:fullscreen .controls-bar,
-.player-section:-webkit-full-screen .controls-bar,
-.player-section.is-learn-fs .controls-bar {
-  position: absolute;
-  left: 0;
-  right: 0;
-  bottom: 0;
+.player-section:fullscreen .player-chrome,
+.player-section:-webkit-full-screen .player-chrome,
+.player-section.is-learn-fs .player-chrome {
   z-index: 7;
-  margin: 0;
-  padding: 0.35rem 0.75rem;
-  border-radius: 0;
-  background: rgba(15, 17, 23, 0.92);
-  border-top: 1px solid var(--border);
-  border-bottom: none;
-  overflow-x: auto;
-  flex-wrap: nowrap;
-  pointer-events: auto;
-  display: flex;
+}
+
+/* Меню поверх субтитров, пока открыто */
+.player-section.is-menu-open:fullscreen .player-wrap,
+.player-section.is-menu-open:-webkit-full-screen .player-wrap,
+.player-section.is-learn-fs.is-menu-open .player-wrap {
+  z-index: 8;
+}
+
+.player-section:fullscreen .player-chrome.is-chrome-idle:not(.is-menu-open),
+.player-section:-webkit-full-screen .player-chrome.is-chrome-idle:not(.is-menu-open),
+.player-section.is-learn-fs .player-chrome.is-chrome-idle:not(.is-menu-open) {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.player-section:fullscreen .player-chrome.is-chrome-idle:not(.is-menu-open) .player-chrome__row,
+.player-section:-webkit-full-screen .player-chrome.is-chrome-idle:not(.is-menu-open) .player-chrome__row,
+.player-section.is-learn-fs .player-chrome.is-chrome-idle:not(.is-menu-open) .player-chrome__row {
+  pointer-events: none;
 }
 
 .btn.is-active {
@@ -850,23 +1057,36 @@ body {
 .player-section.is-learn-fs .subtitle-panel {
   position: absolute;
   left: 50%;
-  bottom: 3.4rem;
+  bottom: 3.5rem;
   top: auto;
   transform: translateX(-50%);
-  width: min(92%, 960px);
+  width: fit-content;
+  max-width: min(92%, 960px);
   z-index: 6;
   margin: 0;
   border-radius: 10px;
   border: none;
-  padding: 0.45rem 0.85rem 0.5rem;
+  padding: 0.35rem 0.75rem;
   background: rgba(8, 10, 16, 0.55);
   backdrop-filter: blur(6px);
   display: flex;
   flex-direction: column;
-  gap: 0.25rem;
+  gap: 0.2rem;
   overflow: visible;
-  pointer-events: auto;
+  pointer-events: none;
   text-shadow: 0 1px 3px rgba(0, 0, 0, 0.85);
+}
+
+.player-section:fullscreen .subtitle-panel .word,
+.player-section:-webkit-full-screen .subtitle-panel .word,
+.player-section.is-learn-fs .subtitle-panel .word,
+.player-section:fullscreen .subtitle-panel .subtitle-display,
+.player-section:-webkit-full-screen .subtitle-panel .subtitle-display,
+.player-section.is-learn-fs .subtitle-panel .subtitle-display,
+.player-section:fullscreen .subtitle-panel .subtitle-translation,
+.player-section:-webkit-full-screen .subtitle-panel .subtitle-translation,
+.player-section.is-learn-fs .subtitle-panel .subtitle-translation {
+  pointer-events: auto;
 }
 
 .player-section:fullscreen .subtitle-panel.is-custom-pos,
@@ -880,6 +1100,7 @@ body {
   outline: 1px dashed rgba(108, 140, 255, 0.7);
   cursor: grab;
   background: rgba(8, 10, 16, 0.72);
+  pointer-events: auto;
 }
 
 .player-section.is-subs-edit .subtitle-panel.is-dragging {
@@ -910,17 +1131,19 @@ body {
 .player-section:-webkit-full-screen .subtitle-translation,
 .player-section.is-learn-fs .subtitle-translation {
   display: block !important;
+  order: -1;
   height: auto;
-  min-height: 0;
+  min-height: 1.4em;
   max-height: none;
-  margin-top: 0;
-  padding: 0.2rem 0.45rem;
-  font-size: calc(clamp(0.9rem, 1.6vw, 1.05rem) * var(--subs-scale, 1));
+  margin: 0 0 0.15rem;
+  padding: 0.15rem 0.45rem;
+  font-size: calc(clamp(0.85rem, 1.5vw, 1rem) * var(--subs-scale, 1));
   line-height: 1.3;
   overflow: visible;
   background: transparent;
   border-left: none;
   color: #d7defc;
+  opacity: 0.92;
 }
 
 .player-section:fullscreen .subtitle-translation.hidden,

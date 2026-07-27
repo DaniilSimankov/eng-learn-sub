@@ -54,22 +54,26 @@
           <label class="upload-card upload-card--inline">
             <input type="file" id="subs-input-url" accept=".srt,.vtt,text/vtt,application/x-subrip" hidden>
             <span class="upload-card__icon">💬</span>
-            <span class="upload-card__title">Субтитры (англ.)</span>
-            <span class="upload-card__name" id="subs-name-url">Не выбрано — можно добавить позже</span>
+            <span class="upload-card__body">
+              <span class="upload-card__title">Субтитры (англ.)</span>
+              <span class="upload-card__name" id="subs-name-url">Не выбрано — позже</span>
+            </span>
           </label>
           <label class="control control--skip-ads">
             <input type="checkbox" id="skip-ads" checked disabled>
             Пропуск рекламы (ylitron — прямой поток без iframe-рекламы)
           </label>
-          <label class="control control--privacy">
-            <input type="checkbox" id="online-translation">
-            AI-перевод (локальная модель, en → ru)
-            <span id="ai-status" class="ai-status" title="Статус Ollama">…</span>
-          </label>
-          <p class="hint hint--privacy">
-            Перевод идёт локально через модель в Docker (не Google).
-            Запуск: <code>./start.sh</code>. Словарь хранится только в браузере.
-          </p>
+          <div class="ai-block">
+            <label class="control control--privacy">
+              <input type="checkbox" id="online-translation">
+              <span class="control__text">AI-перевод (локально, en → ru)</span>
+              <span id="ai-status" class="ai-status" title="Статус Ollama">…</span>
+            </label>
+            <p class="hint hint--privacy">
+              Модель в Docker (не Google). Запуск: <code>./start.sh</code>.
+              Словарь только в браузере.
+            </p>
+          </div>
           <button type="button" id="btn-start-url" class="btn btn--primary" disabled>Открыть плеер</button>
         </div>
 
@@ -97,15 +101,95 @@
       <section class="player-section hidden" id="player-section">
         <div class="player-title-row">
           <div class="player-title" id="player-title"></div>
-          <button type="button" id="btn-learn-fs" class="btn btn--ghost btn--sm" title="Видео сверху, субтитры снизу">
-            ⛶ Учебный экран
-          </button>
         </div>
 
-        <div class="player-wrap">
+        <div class="player-wrap" id="player-wrap">
           <div id="player-loading" class="player-loading hidden">Загрузка плеера…</div>
-          <video id="video" controls controlsList="nofullscreen" preload="metadata" class="hidden"></video>
+          <div class="video-shell" id="video-shell">
+            <video id="video" preload="metadata" class="hidden" playsinline></video>
+          </div>
           <iframe id="embed-frame" class="embed-frame hidden" allowfullscreen allow="autoplay; fullscreen; encrypted-media"></iframe>
+
+          <div class="player-chrome is-chrome-visible" id="player-chrome">
+            <div class="player-chrome__row">
+              <button type="button" class="chrome-btn control--video-only" id="chrome-play" title="Play / Pause" aria-label="Play / Pause">▶</button>
+              <input type="range" class="chrome-seek control--video-only" id="chrome-seek" min="0" max="1000" value="0" step="1" aria-label="Перемотка">
+              <span class="chrome-time control--video-only" id="chrome-time">0:00 / 0:00</span>
+              <button type="button" class="chrome-btn control--video-only" id="chrome-mute" title="Звук" aria-label="Звук">🔊</button>
+              <input type="range" class="chrome-volume control--video-only" id="chrome-volume" min="0" max="1" value="1" step="0.05" aria-label="Громкость">
+              <button type="button" class="chrome-btn" id="btn-learn-fs" title="Учебный экран">⛶</button>
+              <button type="button" class="chrome-btn" id="chrome-menu-btn" title="Настройки" aria-label="Настройки" aria-expanded="false" aria-controls="player-menu">⋯</button>
+            </div>
+
+            <div class="player-menu hidden" id="player-menu" role="menu">
+              <label class="control control--video-only">
+                Скорость
+                <select id="speed-select">
+                  <option value="0.75">0.75×</option>
+                  <option value="1" selected>1×</option>
+                  <option value="1.25">1.25×</option>
+                  <option value="1.5">1.5×</option>
+                </select>
+              </label>
+              <label class="control control--video-only hidden" id="quality-track-wrap">
+                Качество
+                <select id="quality-track-select"></select>
+              </label>
+              <label class="control control--video-only hidden" id="audio-track-wrap">
+                Озвучка
+                <select id="audio-track-select"></select>
+              </label>
+              <label class="control control--video-only hidden" id="subtitle-track-wrap">
+                Субтитры
+                <select id="subtitle-track-select"></select>
+              </label>
+              <div class="control control--iframe-only hidden" id="manual-sync">
+                <span>Время в плеере</span>
+                <input type="text" id="manual-time" class="time-input" placeholder="05:23" title="мин:сек">
+                <button type="button" id="btn-sync-time" class="btn btn--ghost btn--sm">Синхр.</button>
+              </div>
+              <div class="control control--iframe-only hidden menu-row">
+                <button type="button" id="btn-prev-cue" class="btn btn--ghost btn--sm">← Реплика</button>
+                <button type="button" id="btn-next-cue" class="btn btn--ghost btn--sm">Реплика →</button>
+              </div>
+              <label class="control control--video-only">
+                ← → перемотка
+                <select id="seek-step-select" title="Шаг перемотки стрелками">
+                  <option value="5">5 сек</option>
+                  <option value="10" selected>10 сек</option>
+                </select>
+              </label>
+              <label class="control">
+                <input type="checkbox" id="pause-on-word" checked>
+                Пауза при клике на слово
+              </label>
+              <label class="control">
+                <input type="checkbox" id="show-ru-inline">
+                Перевод строки
+              </label>
+              <label class="control control--subs-size" id="subs-size-wrap" title="Размер субтитров">
+                Размер
+                <input type="range" id="subs-size-range" min="50" max="200" step="5" value="100">
+                <span id="subs-size-value">100%</span>
+              </label>
+              <label class="control control--iframe-only hidden" id="skip-ads-live-wrap">
+                <input type="checkbox" id="skip-ads-live" checked>
+                Пропуск рекламы
+              </label>
+              <div class="menu-row">
+                <button type="button" id="btn-replay-line" class="btn btn--ghost btn--sm control--video-only">↺ Повторить фразу</button>
+                <button type="button" id="btn-subs-edit" class="btn btn--ghost btn--sm hidden" title="Переместить субтитры по экрану">
+                  ↕ Позиция
+                </button>
+              </div>
+              <div class="menu-row">
+                <button type="button" id="btn-back-setup" class="btn btn--ghost btn--sm">← Назад</button>
+                <button type="button" id="btn-exit-fs" class="btn btn--ghost btn--sm hidden" title="Выйти из учебного экрана (Esc)">
+                  ✕ Выйти
+                </button>
+              </div>
+            </div>
+          </div>
         </div>
 
         <div id="iframe-notice" class="notice-banner hidden">
@@ -124,74 +208,12 @@
         ></div>
 
         <div class="player-learn-ui" id="player-learn-ui">
-          <div class="controls-bar">
-            <label class="control control--video-only">
-              Скорость
-              <select id="speed-select">
-                <option value="0.75">0.75×</option>
-                <option value="1" selected>1×</option>
-                <option value="1.25">1.25×</option>
-                <option value="1.5">1.5×</option>
-              </select>
-            </label>
-            <label class="control control--video-only hidden" id="quality-track-wrap">
-              Качество
-              <select id="quality-track-select"></select>
-            </label>
-            <label class="control control--video-only hidden" id="audio-track-wrap">
-              Озвучка
-              <select id="audio-track-select"></select>
-            </label>
-            <label class="control control--video-only hidden" id="subtitle-track-wrap">
-              Субтитры
-              <select id="subtitle-track-select"></select>
-            </label>
-            <div class="control control--iframe-only hidden" id="manual-sync">
-              <span>Время в плеере</span>
-              <input type="text" id="manual-time" class="time-input" placeholder="05:23" title="мин:сек">
-              <button type="button" id="btn-sync-time" class="btn btn--ghost btn--sm">Синхр.</button>
-            </div>
-            <div class="control control--iframe-only hidden">
-              <button type="button" id="btn-prev-cue" class="btn btn--ghost btn--sm">← Реплика</button>
-              <button type="button" id="btn-next-cue" class="btn btn--ghost btn--sm">Реплика →</button>
-            </div>
-            <label class="control">
-              <input type="checkbox" id="pause-on-word" checked>
-              Пауза при клике на слово
-            </label>
-            <label class="control">
-              <input type="checkbox" id="show-ru-inline">
-              Перевод строки снизу
-            </label>
-            <label class="control" id="subs-size-wrap">
-              Размер
-              <select id="subs-size-select" title="Размер субтитров">
-                <option value="0.85">S</option>
-                <option value="1" selected>M</option>
-                <option value="1.2">L</option>
-                <option value="1.45">XL</option>
-              </select>
-            </label>
-            <label class="control control--iframe-only hidden" id="skip-ads-live-wrap">
-              <input type="checkbox" id="skip-ads-live" checked>
-              Пропуск рекламы
-            </label>
-            <button type="button" id="btn-replay-line" class="btn btn--ghost btn--sm control--video-only">↺ Повторить фразу</button>
-            <button type="button" id="btn-subs-edit" class="btn btn--ghost btn--sm hidden" title="Переместить субтитры по экрану">
-              ↕ Позиция
-            </button>
-            <button type="button" id="btn-back-setup" class="btn btn--ghost btn--sm">← Назад</button>
-            <button type="button" id="btn-exit-fs" class="btn btn--ghost btn--sm hidden" title="Выйти из учебного экрана (Esc)">
-              ✕ Выйти
-            </button>
-          </div>
-
           <div class="subtitle-panel">
             <div class="subtitle-panel__label" id="subtitle-hint">
-              Клик — слово · Shift+клик или протянуть — фраза · клик по фону — вся реплика
+              Клик — слово · Shift+клик или протянуть — фраза
             </div>
+            <div id="subtitle-translation" class="subtitle-translation hidden" aria-live="polite"></div>
             <div id="subtitle-display" class="subtitle-display"></div>
-            <div id="subtitle-translation" class="subtitle-translation hidden"></div>
             <div id="subtitle-meta" class="subtitle-meta"></div>
           </div>
         </div>
