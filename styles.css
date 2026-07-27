@@ -871,6 +871,13 @@ body {
   box-sizing: border-box;
   display: flex;
   flex-direction: column;
+  overflow: hidden;
+}
+
+.popup.is-ask-collapsed {
+  min-width: 240px;
+  min-height: 140px;
+  width: min(320px, calc(100vw - 16px));
 }
 
 .popup.has-custom-size {
@@ -880,6 +887,7 @@ body {
 .popup.has-custom-size .popup__body {
   flex: 1 1 auto;
   min-height: 0;
+  overflow: hidden;
 }
 
 .popup.has-custom-size .popup__ask {
@@ -971,12 +979,59 @@ body {
   gap: 0;
   min-height: 0;
   flex: 1 1 auto;
+  overflow: hidden;
+  position: relative;
 }
 
 .popup__main {
   flex: 0 1 260px;
   min-width: 0;
+  min-height: 0;
   padding-right: 0.85rem;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.25) transparent;
+}
+
+.popup.is-ask-collapsed .popup__main {
+  flex: 1 1 auto;
+  padding-right: 1.4rem;
+}
+
+.popup__ask-toggle {
+  flex: 0 0 auto;
+  align-self: flex-start;
+  width: 1.15rem;
+  height: 1.5rem;
+  margin-top: 0.05rem;
+  margin-left: -0.55rem;
+  margin-right: -0.55rem;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text-muted);
+  font-size: 0.95rem;
+  line-height: 1;
+  cursor: pointer;
+  z-index: 2;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+}
+
+.popup__ask-toggle:hover {
+  color: #c5d0ff;
+  border-color: rgba(108, 140, 255, 0.45);
+  background: rgba(108, 140, 255, 0.12);
+}
+
+.popup.is-ask-collapsed .popup__ask-toggle {
+  margin-left: 0;
+  margin-right: 0;
 }
 
 .popup__close {
@@ -1039,6 +1094,7 @@ body {
 .popup__ask {
   flex: 1 1 280px;
   min-width: 0;
+  min-height: 0;
   max-width: 340px;
   display: flex;
   flex-direction: column;
@@ -1048,6 +1104,11 @@ body {
   border-top: none;
   border-left: 1px solid var(--border);
   max-height: min(320px, 55vh);
+  overflow: hidden;
+}
+
+.popup.is-ask-collapsed .popup__ask {
+  display: none;
 }
 
 .popup__ask-label {
@@ -1165,6 +1226,15 @@ body {
     width: min(420px, calc(100vw - 16px));
   }
 
+  .popup.is-ask-collapsed {
+    width: min(420px, calc(100vw - 16px));
+    min-width: 0;
+  }
+
+  .popup__ask-toggle {
+    display: none;
+  }
+
   .popup__body {
     flex-direction: column;
   }
@@ -1173,6 +1243,11 @@ body {
     flex: 1 1 auto;
     padding-right: 0;
     padding-bottom: 0.7rem;
+    max-height: min(42vh, 280px);
+  }
+
+  .popup.is-ask-collapsed .popup__main {
+    padding-right: 0;
   }
 
   .popup__ask {
@@ -1182,6 +1257,10 @@ body {
     padding: 0.7rem 0 0;
     border-left: none;
     border-top: 1px solid var(--border);
+  }
+
+  .popup.is-ask-collapsed .popup__ask {
+    display: flex;
   }
 
   .popup.has-custom-size .popup__ask {

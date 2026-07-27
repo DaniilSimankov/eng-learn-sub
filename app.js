@@ -17,8 +17,11 @@ const WATCH_POS_KEY = 'sublearn-watch-pos';
 const WATCH_SESSION_KEY = 'sublearn-watch-session';
 const POPUP_POS_KEY = 'sublearn-popup-pos';
 const POPUP_SIZE_KEY = 'sublearn-popup-size';
+const POPUP_ASK_OPEN_KEY = 'sublearn-popup-ask-open';
 const POPUP_W_MIN = 360;
+const POPUP_W_MIN_COLLAPSED = 240;
 const POPUP_H_MIN = 200;
+const POPUP_H_MIN_COLLAPSED = 140;
 const POPUP_W_DEFAULT = 640;
 const WATCH_POS_MIN_SEC = 5;
 const WATCH_POS_END_RATIO = 0.95;
@@ -65,6 +68,7 @@ const state = {
   popupResize: null,
   popupPinnedPos: loadPopupPos(),
   popupPinnedSize: loadPopupSize(),
+  popupAskOpen: loadPopupAskOpen(),
   preferredVoiceURI: null,
   translationCache: new Map(),
   translationInflight: new Map(),
@@ -135,6 +139,8 @@ const popupAskForm = $('#popup-ask-form');
 const popupAskInput = $('#popup-ask-input');
 const popupAskLog = $('#popup-ask-log');
 const popupAskSend = $('#popup-ask-send');
+const popupAskPanel = $('#popup-ask');
+const popupAskToggle = $('#popup-ask-toggle');
 const popupDragHandle = $('#popup-drag');
 const vocabDrawer = $('#vocab-drawer');
 const vocabList = $('#vocab-list');
@@ -2417,6 +2423,53 @@ function clearPopupPos() {
   savePopupPos(null);
 }
 
+function loadPopupAskOpen() {
+  try {
+    const raw = localStorage.getItem(POPUP_ASK_OPEN_KEY);
+    if (raw == null) return true;
+    return raw !== '0' && raw !== 'false';
+  } catch {
+    return true;
+  }
+}
+
+function savePopupAskOpen(open) {
+  state.popupAskOpen = !!open;
+  try {
+    localStorage.setItem(POPUP_ASK_OPEN_KEY, open ? '1' : '0');
+  } catch {
+    /* ignore */
+  }
+}
+
+function popupSizeMins() {
+  if (state.popupAskOpen === false) {
+    return { w: POPUP_W_MIN_COLLAPSED, h: POPUP_H_MIN_COLLAPSED };
+  }
+  return { w: POPUP_W_MIN, h: POPUP_H_MIN };
+}
+
+function applyPopupAskOpen(open = state.popupAskOpen) {
+  if (!wordPopup) return;
+  state.popupAskOpen = open !== false;
+  wordPopup.classList.toggle('is-ask-collapsed', !state.popupAskOpen);
+  if (popupAskToggle) {
+    popupAskToggle.setAttribute('aria-expanded', state.popupAskOpen ? 'true' : 'false');
+    popupAskToggle.title = state.popupAskOpen ? 'Скрыть чат' : 'Показать чат';
+    popupAskToggle.textContent = state.popupAskOpen ? '‹' : '›';
+  }
+
+  const hasCustom =
+    wordPopup.classList.contains('has-custom-size') || Boolean(wordPopup.style.width);
+  if (!hasCustom) return;
+
+  const box = wordPopup.getBoundingClientRect();
+  let width = box.width;
+  const height = wordPopup.style.height ? box.height : null;
+  if (state.popupAskOpen && width < POPUP_W_MIN) width = POPUP_W_MIN;
+  applyPopupSize(width, height);
+}
+
 function loadPopupSize() {
   try {
     const raw = localStorage.getItem(POPUP_SIZE_KEY);
@@ -2424,10 +2477,11 @@ function loadPopupSize() {
     const data = JSON.parse(raw);
     const width = Number(data?.width);
     const height = Number(data?.height);
-    if (!Number.isFinite(width) || width < POPUP_W_MIN) return null;
+    if (!Number.isFinite(width) || width < POPUP_W_MIN_COLLAPSED) return null;
     return {
       width: Math.round(width),
-      height: Number.isFinite(height) && height >= POPUP_H_MIN ? Math.round(height) : null,
+      height:
+        Number.isFinite(height) && height >= POPUP_H_MIN_COLLAPSED ? Math.round(height) : null,
     };
   } catch {
     return null;
@@ -2461,14 +2515,15 @@ function clearPopupSize() {
 }
 
 function clampPopupSize(width, height) {
+  const mins = popupSizeMins();
   const vw = window.innerWidth;
   const vh = window.innerHeight;
-  const maxW = Math.max(POPUP_W_MIN, vw - 16);
-  const maxH = Math.max(POPUP_H_MIN, vh - 16);
-  const w = Math.max(POPUP_W_MIN, Math.min(Number(width) || POPUP_W_DEFAULT, maxW));
+  const maxW = Math.max(mins.w, vw - 16);
+  const maxH = Math.max(mins.h, vh - 16);
+  const w = Math.max(mins.w, Math.min(Number(width) || POPUP_W_DEFAULT, maxW));
   let h = null;
   if (Number.isFinite(height) && height != null) {
-    h = Math.max(POPUP_H_MIN, Math.min(Number(height), maxH));
+    h = Math.max(mins.h, Math.min(Number(height), maxH));
   }
   return { width: w, height: h };
 }
@@ -2531,6 +2586,7 @@ function showPopup(word, sentence, rect) {
   popupContext.textContent = sentence;
   resetPopupAsk();
   wordPopup.classList.remove('hidden');
+  applyPopupAskOpen(state.popupAskOpen);
 
   const pinnedSize = state.popupPinnedSize;
   if (pinnedSize) {
@@ -2601,6 +2657,25 @@ function bindPopupDrag() {
 }
 
 bindPopupDrag();
+
+function bindPopupAskToggle() {
+  if (!popupAskToggle || popupAskToggle.dataset.bound === '1') return;
+  popupAskToggle.dataset.bound = '1';
+  popupAskToggle.addEventListener('click', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const next = !state.popupAskOpen;
+    savePopupAskOpen(next);
+    applyPopupAskOpen(next);
+    if (wordPopup && !wordPopup.classList.contains('hidden')) {
+      const box = wordPopup.getBoundingClientRect();
+      applyPopupPos(box.left, box.top, box.width, box.height);
+    }
+  });
+}
+
+bindPopupAskToggle();
+applyPopupAskOpen(state.popupAskOpen);
 
 function bindPopupResize() {
   if (!wordPopup || wordPopup.dataset.resizeBound === '1') return;
