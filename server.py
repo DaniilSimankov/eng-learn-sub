@@ -1004,6 +1004,8 @@ VULGAR_GLOSSARY = {
 }
 
 # Многословные идиомы — всегда раньше LLM (3B плохо их знает).
+# Только мат/устойчивые ругательства — 4B их стабильно ломает.
+# Обычные разговорные идиомы держим в промптах/few-shot, не раздувая словарь.
 PHRASE_GLOSSARY = {
     "shut the fuck up": "заткнись нахуй",
     "shut the hell up": "заткнись уже",
@@ -1019,11 +1021,6 @@ PHRASE_GLOSSARY = {
     "are you fucking kidding me": "ты ёбанутый?",
     "no fucking way": "нихуя себе",
     "oh my fucking god": "ёбаный в рот",
-    # Разговорное things have been… — не «вещи были…»
-    "things have been like really good": "всё стало типа реально хорошо",
-    "things have been really good": "всё стало реально хорошо",
-    "things have been so good": "всё стало так хорошо",
-    "things are looking up": "дела идут на лад",
 }
 
 # Односложные слова, которые 3B ломает рядом с матом / частые клики без LLM.
@@ -1045,6 +1042,8 @@ COMMON_WORD_GLOSSARY = {
     "planet": "планета",
     "earth": "земля; Земля",
     "revolving": "вращающийся; вращаться",
+    "point": "смысл; суть; точка",
+    "ain't": "не (разг.)",
 }
 
 # Артикли: 3B в контексте мата часто отвечает «фUCK» вместо значения артикля.
@@ -1175,33 +1174,46 @@ def _translate_cache_put(key: str, value: str) -> None:
             _translate_cache.popitem(last=False)
 
 
-def _line_translate_messages(cleaned: str) -> list:
-    system = (
-        "Ты переводчик субтитров EN→RU. "
-        "Переведи ТОЛЬКО данную реплику. "
-        "Запрещено: дописывать продолжение, объяснения, «что даже…», "
-        "переводить соседний текст, которого нет во входе. "
-        "Сохраняй объём roughly как в оригинале. Имена латиницей. Мат прямо. "
-        'Ответ строго JSON: {"ru":"перевод"}.'
+def _colloquial_system_prompt(*, span: bool = False) -> str:
+    """Общие правила разговорного EN→RU; паттерны вместо раздувания глоссария."""
+    scope = (
+        "Переведи ТОЛЬКО поле TARGET. CONTEXT — соседние реплики для смысла, "
+        "его не переводи и не вплетай в ответ. "
+        if span
+        else "Переведи ТОЛЬКО данную реплику. "
     )
+    return (
+        "Ты переводчик разговорных субтитров EN→RU (сериал, сленг). "
+        + scope
+        + "Переводи смысл, как сказал бы носитель русского, а не слово в слово. "
+        "Частые ловушки-кальки: "
+        "the point / what's the point → суть/смысл (НЕ «точка»); "
+        "things have been/are → всё стало/идёт (НЕ «вещи»); "
+        "I mean → в смысле / ну; "
+        "like (filler) → типа / как бы; "
+        "ain't → разговорное отрицание. "
+        "Без дописок и пояснений. Длина roughly как оригинал. "
+        "Имена латиницей. Мат без цензуры. "
+        + (
+            'Строго JSON: {"ru":"перевод только TARGET"}.'
+            if span
+            else 'Строго JSON: {"ru":"перевод"}.'
+        )
+    )
+
+
+def _line_translate_messages(cleaned: str) -> list:
     return [
-        {"role": "system", "content": system},
-        {
-            "role": "user",
-            "content": "things have been like really good",
-        },
-        {
-            "role": "assistant",
-            "content": '{"ru":"всё стало типа реально хорошо"}',
-        },
-        {
-            "role": "user",
-            "content": "I mean ever since I gave my life over to my lord and savior Jesus Christ",
-        },
-        {
-            "role": "assistant",
-            "content": '{"ru":"в смысле, с тех пор как я отдал жизнь Господу и Спасителю Иисусу Христу"}',
-        },
+        {"role": "system", "content": _colloquial_system_prompt(span=False)},
+        # Few-shot: разные паттерны, не «заучивание» одной фразы.
+        {"role": "user", "content": "I mean ain't that the point"},
+        {"role": "assistant", "content": '{"ru":"в смысле, разве не в этом суть?"}'},
+        {"role": "user", "content": "things have been like really good"},
+        {"role": "assistant", "content": '{"ru":"всё стало типа реально хорошо"}'},
+        {"role": "user", "content": "what's the point of all this"},
+        {"role": "assistant", "content": '{"ru":"какой во всём этом смысл"}'},
+        {"role": "user", "content": "you know what I mean"},
+        {"role": "assistant", "content": '{"ru":"ты понимаешь, о чём я"}'},
         {"role": "user", "content": cleaned},
     ]
 
@@ -1217,18 +1229,8 @@ def _span_translate_messages(marked: str, target: str) -> list:
         after = (marked[m.end() :] or "").strip()
     context_bits = " ".join(p for p in (before, after) if p).strip()
 
-    system = (
-        "Ты переводчик субтитров EN→RU. "
-        "Переведи ТОЛЬКО поле TARGET. "
-        "CONTEXT — соседние реплики: учти смысл (времена, подлежащее), "
-        "но НЕ переводи CONTEXT и НЕ вплетай его слова в ответ. "
-        "Разговорное things have been/are = «всё стало/идёт», НЕ «вещи были». "
-        "Запрещена отсебятина и дописывания («что даже не могу описать» и т.п.). "
-        "Ответ по длине близок к TARGET. "
-        'Строго JSON: {"ru":"перевод только TARGET"}.'
-    )
     return [
-        {"role": "system", "content": system},
+        {"role": "system", "content": _colloquial_system_prompt(span=True)},
         {
             "role": "user",
             "content": (
@@ -1236,21 +1238,15 @@ def _span_translate_messages(marked: str, target: str) -> list:
                 "TARGET: things have been like really good"
             ),
         },
-        {
-            "role": "assistant",
-            "content": '{"ru":"всё стало типа реально хорошо"}',
-        },
+        {"role": "assistant", "content": '{"ru":"всё стало типа реально хорошо"}'},
         {
             "role": "user",
             "content": (
                 "CONTEXT: things have been like really good\n"
-                "TARGET: I mean ever since I gave my life over to my lord and savior Jesus Christ"
+                "TARGET: I mean ain't that the point"
             ),
         },
-        {
-            "role": "assistant",
-            "content": '{"ru":"в смысле, с тех пор как я отдал жизнь Господу и Спасителю Иисусу Христу"}',
-        },
+        {"role": "assistant", "content": '{"ru":"в смысле, разве не в этом суть?"}'},
         {
             "role": "user",
             "content": (
@@ -1318,6 +1314,10 @@ def _is_bad_phrase_translation(source: str, translation: str) -> bool:
     if re.search(r"^things\b.+\b(have been|has been|are|were|got|getting)\b", src):
         if re.search(r"\bвещ", ru):
             return True
+    # Idiomatic "the point" (суть) → не геометрическая «точка»
+    if re.search(r"\b(the point|what's the point|whats the point)\b", src):
+        if re.search(r"\bточк", ru) and not re.search(r"\b(суть|смысл|дело)\b", ru):
+            return True
     return False
 
 
@@ -1326,11 +1326,14 @@ def _strict_retry_messages(target: str) -> list:
         {
             "role": "system",
             "content": (
-                "Translate EN→RU literally by meaning. "
-                "No extra words. No finishing the sentence. No commentary. "
+                "EN→RU colloquial subtitles. Sense, not word-for-word. "
+                "the point→суть/смысл (not точка). things→всё (not вещи). "
+                "No extra words, no commentary. "
                 'JSON only: {"ru":"..."}.'
             ),
         },
+        {"role": "user", "content": "ain't that the point"},
+        {"role": "assistant", "content": '{"ru":"разве не в этом суть?"}'},
         {"role": "user", "content": target},
     ]
 

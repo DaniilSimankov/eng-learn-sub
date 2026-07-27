@@ -231,7 +231,16 @@
             <div class="subtitle-panel__label" id="subtitle-hint">
               Клик — слово · Shift+клик или протянуть — фраза
             </div>
-            <div id="subtitle-translation" class="subtitle-translation hidden" aria-live="polite"></div>
+            <div id="subtitle-translation" class="subtitle-translation hidden" aria-live="polite">
+              <span id="subtitle-translation-text" class="subtitle-translation__text"></span>
+              <button
+                type="button"
+                id="subtitle-translation-retry"
+                class="translation-retry hidden"
+                title="Повторить перевод"
+                aria-label="Повторить перевод"
+              >↻ Повторить</button>
+            </div>
             <div id="subtitle-display" class="subtitle-display"></div>
             <div id="subtitle-meta" class="subtitle-meta"></div>
           </div>
@@ -242,6 +251,12 @@
           <div class="popup__word" id="popup-word"></div>
           <div class="popup__translation" id="popup-translation"></div>
           <div class="popup__translation-note hidden" id="popup-translation-note"></div>
+          <button
+            type="button"
+            id="popup-retry"
+            class="btn btn--ghost btn--sm translation-retry translation-retry--popup hidden"
+            title="Повторить перевод"
+          >↻ Повторить</button>
           <div class="popup__context" id="popup-context"></div>
           <div class="popup__actions">
             <button type="button" class="btn btn--primary btn--sm" id="popup-save">+ В словарь</button>

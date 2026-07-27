@@ -95,6 +95,8 @@ const iframeNotice = $('#iframe-notice');
 const playbackError = $('#playback-error');
 const subtitleDisplay = $('#subtitle-display');
 const subtitleTranslation = $('#subtitle-translation');
+const subtitleTranslationText = $('#subtitle-translation-text');
+const subtitleTranslationRetry = $('#subtitle-translation-retry');
 const subtitleMeta = $('#subtitle-meta');
 const subtitleHint = $('#subtitle-hint');
 const speedSelect = $('#speed-select');
@@ -104,6 +106,7 @@ const wordPopup = $('#word-popup');
 const popupWord = $('#popup-word');
 const popupTranslation = $('#popup-translation');
 const popupTranslationNote = $('#popup-translation-note');
+const popupRetry = $('#popup-retry');
 const popupContext = $('#popup-context');
 const vocabDrawer = $('#vocab-drawer');
 const vocabList = $('#vocab-list');
@@ -710,6 +713,14 @@ subtitleDisplay.addEventListener('click', (e) => {
 $('#popup-close').addEventListener('click', hidePopup);
 $('#popup-save').addEventListener('click', saveFromPopup);
 $('#popup-speak').addEventListener('click', speakPopupWord);
+popupRetry?.addEventListener('click', (e) => {
+  e.stopPropagation();
+  retryPopupTranslation();
+});
+subtitleTranslationRetry?.addEventListener('click', (e) => {
+  e.stopPropagation();
+  retryInlineTranslation();
+});
 document.addEventListener('click', (e) => {
   if (Date.now() < state.ignorePopupHideUntil) return;
   if (wordPopup.classList.contains('hidden')) return;
@@ -1783,12 +1794,12 @@ function renderCurrentCue() {
   if (showRuInline.checked) {
     subtitleTranslation.classList.remove('hidden');
     if (!isVideoActivelyPlaying()) {
-      subtitleTranslation.textContent = '…';
+      setInlineTranslation('…');
     }
     scheduleInlineTranslation(cue.text, state.currentCueIndex);
   } else {
     subtitleTranslation.classList.add('hidden');
-    subtitleTranslation.textContent = '';
+    setInlineTranslation('');
   }
 }
 
@@ -1805,16 +1816,16 @@ function scheduleInlineTranslation(text, cueIndex) {
   }
   const focus = String(text || '').trim();
   const expanded = buildExpandedCueContext(cueIndex, focus);
-  const cachedKey = `en-ru:v5:${focus.toLowerCase()}|${expanded.toLowerCase()}`;
+  const cachedKey = `en-ru:v7:${focus.toLowerCase()}|${expanded.toLowerCase()}`;
 
   // Во время playback Ollama (qwen3:4b) съедает CPU → видео тормозит, звук идёт.
   // Пока играет — только кэш; инференс на паузе.
   if (isVideoActivelyPlaying()) {
     if (state.translationCache.has(cachedKey)) {
-      subtitleTranslation.textContent = state.translationCache.get(cachedKey);
+      setInlineTranslation(state.translationCache.get(cachedKey));
       subtitleTranslation.classList.remove('hidden');
     } else {
-      subtitleTranslation.textContent = '';
+      setInlineTranslation('');
     }
     return;
   }
@@ -1822,7 +1833,7 @@ function scheduleInlineTranslation(text, cueIndex) {
   if (state.translationCache.has(cachedKey)) {
     translateText(text, cueIndex).then((ru) => {
       if (state.currentCueIndex === cueIndex && showRuInline.checked) {
-        subtitleTranslation.textContent = ru;
+        setInlineTranslation(ru);
         subtitleTranslation.classList.remove('hidden');
       }
     });
@@ -1835,7 +1846,7 @@ function scheduleInlineTranslation(text, cueIndex) {
     if (isVideoActivelyPlaying()) return;
     translateText(text, cueIndex).then((ru) => {
       if (state.currentCueIndex === cueIndex && showRuInline.checked && !isVideoActivelyPlaying()) {
-        subtitleTranslation.textContent = ru;
+        setInlineTranslation(ru);
         subtitleTranslation.classList.remove('hidden');
       }
     });
@@ -1846,9 +1857,42 @@ function refreshInlineTranslationOnPause() {
   if (!showRuInline.checked || state.currentCueIndex < 0) return;
   const cue = state.cues[state.currentCueIndex];
   if (!cue?.text) return;
-  subtitleTranslation.textContent = '…';
+  setInlineTranslation('…');
   subtitleTranslation.classList.remove('hidden');
   scheduleInlineTranslation(cue.text, state.currentCueIndex);
+}
+
+function setInlineTranslation(result) {
+  const failed = isTranslationFailure(result);
+  const text = failed
+    ? friendlyTranslationError(result.message)
+    : String(result ?? '');
+  if (subtitleTranslationText) {
+    subtitleTranslationText.textContent = text;
+  } else {
+    subtitleTranslation.textContent = text;
+  }
+  subtitleTranslation.classList.toggle('is-error', failed);
+  if (subtitleTranslationRetry) {
+    subtitleTranslationRetry.classList.toggle('hidden', !failed);
+  }
+}
+
+async function retryInlineTranslation() {
+  if (!showRuInline.checked || state.currentCueIndex < 0) return;
+  const cue = state.cues[state.currentCueIndex];
+  if (!cue?.text) return;
+  const focus = cue.text.trim();
+  const expanded = buildExpandedCueContext(state.currentCueIndex, focus);
+  const key = `en-ru:v7:${focus.toLowerCase()}|${expanded.toLowerCase()}`;
+  state.translationCache.delete(key);
+  state.translationInflight.delete(key);
+  setInlineTranslation('…');
+  subtitleTranslation.classList.remove('hidden');
+  const ru = await translateText(focus, state.currentCueIndex);
+  if (state.currentCueIndex >= 0 && state.cues[state.currentCueIndex]?.text === cue.text) {
+    setInlineTranslation(ru);
+  }
 }
 
 function tokenizeToHtml(text) {
@@ -2028,6 +2072,8 @@ function showPopup(word, sentence, rect) {
   popupWord.textContent = word;
   popupTranslation.textContent = 'Перевод…';
   popupTranslation.classList.add('loading');
+  popupTranslation.classList.remove('is-error');
+  popupRetry?.classList.add('hidden');
   if (popupTranslationNote) {
     popupTranslationNote.textContent = '';
     popupTranslationNote.classList.add('hidden');
@@ -2047,9 +2093,22 @@ function showPopup(word, sentence, rect) {
 }
 
 function setPopupTranslation(raw) {
+  if (isTranslationFailure(raw)) {
+    popupTranslation.textContent = friendlyTranslationError(raw.message);
+    popupTranslation.classList.remove('loading');
+    popupTranslation.classList.add('is-error');
+    popupRetry?.classList.remove('hidden');
+    if (popupTranslationNote) {
+      popupTranslationNote.textContent = '';
+      popupTranslationNote.classList.add('hidden');
+    }
+    return;
+  }
+
   const { main, note } = splitTranslationNote(raw);
   popupTranslation.textContent = main || raw;
-  popupTranslation.classList.remove('loading');
+  popupTranslation.classList.remove('loading', 'is-error');
+  popupRetry?.classList.add('hidden');
   if (popupTranslationNote) {
     if (note) {
       popupTranslationNote.textContent = note;
@@ -2058,6 +2117,23 @@ function setPopupTranslation(raw) {
       popupTranslationNote.textContent = '';
       popupTranslationNote.classList.add('hidden');
     }
+  }
+}
+
+async function retryPopupTranslation() {
+  const current = state.lastPopupWord;
+  if (!current?.word) return;
+  const { word, sentence } = current;
+  const key = `word:v10:${word.replace(/^['"]|['"]$/g, '').toLowerCase()}:${sentence || ''}`;
+  state.translationCache.delete(key);
+  state.translationInflight.delete(key);
+  popupTranslation.textContent = 'Перевод…';
+  popupTranslation.classList.add('loading');
+  popupTranslation.classList.remove('is-error');
+  popupRetry?.classList.add('hidden');
+  const translation = await translateWord(word, sentence);
+  if (state.lastPopupWord?.word === word) {
+    setPopupTranslation(translation);
   }
 }
 
@@ -2117,6 +2193,8 @@ function buildTranslationContext(phrase, sentence) {
 
 function hidePopup() {
   wordPopup.classList.add('hidden');
+  popupRetry?.classList.add('hidden');
+  popupTranslation.classList.remove('is-error');
   if (popupTranslationNote) {
     popupTranslationNote.textContent = '';
     popupTranslationNote.classList.add('hidden');
@@ -2135,10 +2213,44 @@ async function fetchTranslation(text, { word = null, sentence = null } = {}) {
   if (text) params.set('text', text);
   if (word) params.set('word', word);
   if (sentence) params.set('sentence', sentence);
-  const res = await fetch(`/api/translate?${params.toString()}`);
-  const data = await res.json();
+  let res;
+  try {
+    res = await fetch(`/api/translate?${params.toString()}`);
+  } catch (err) {
+    const msg = err?.message || 'Ошибка сети';
+    if (/failed to fetch|networkerror|load failed/i.test(msg)) {
+      throw new Error('Нет связи с сервером перевода');
+    }
+    throw new Error(msg);
+  }
+  let data;
+  try {
+    data = await res.json();
+  } catch {
+    throw new Error(res.ok ? 'Пустой ответ сервера' : `Ошибка сервера (${res.status})`);
+  }
   if (!res.ok) throw new Error(data.error || 'Ошибка перевода');
   return data.translation;
+}
+
+function translationFailure(message) {
+  return { error: true, message: String(message || 'Ошибка перевода') };
+}
+
+function isTranslationFailure(result) {
+  return Boolean(result && typeof result === 'object' && result.error === true);
+}
+
+function friendlyTranslationError(message) {
+  const raw = String(message || '').trim();
+  if (!raw) return 'Ошибка перевода';
+  if (/failed to fetch|networkerror|load failed/i.test(raw)) {
+    return 'Нет связи с сервером перевода';
+  }
+  if (/unexpected token|json|response/i.test(raw)) {
+    return 'Сервер вернул некорректный ответ';
+  }
+  return raw;
 }
 
 async function translateText(text, cueIndex = state.currentCueIndex) {
@@ -2147,7 +2259,7 @@ async function translateText(text, cueIndex = state.currentCueIndex) {
   }
   const focus = String(text || '').trim();
   const expanded = buildExpandedCueContext(cueIndex, focus);
-  const key = `en-ru:v5:${focus.toLowerCase()}|${expanded.toLowerCase()}`;
+  const key = `en-ru:v7:${focus.toLowerCase()}|${expanded.toLowerCase()}`;
   if (state.translationCache.has(key)) return state.translationCache.get(key);
   if (state.translationInflight.has(key)) return state.translationInflight.get(key);
 
@@ -2163,7 +2275,7 @@ async function translateText(text, cueIndex = state.currentCueIndex) {
       state.translationCache.set(key, result);
       return result;
     } catch (err) {
-      return err?.message || 'Ошибка перевода';
+      return translationFailure(err?.message || 'Ошибка перевода');
     } finally {
       state.translationInflight.delete(key);
     }
@@ -2179,7 +2291,7 @@ async function translateWord(word, sentence = '') {
     return clean;
   }
   const ctx = sentence || state.lastPopupWord?.sentence || '';
-  const key = `word:v9:${clean.toLowerCase()}:${ctx}`;
+  const key = `word:v10:${clean.toLowerCase()}:${ctx}`;
   if (state.translationCache.has(key)) return state.translationCache.get(key);
   if (state.translationInflight.has(key)) return state.translationInflight.get(key);
 
@@ -2189,7 +2301,7 @@ async function translateWord(word, sentence = '') {
       state.translationCache.set(key, result);
       return result;
     } catch (err) {
-      return err?.message || '…';
+      return translationFailure(err?.message || 'Ошибка перевода');
     } finally {
       state.translationInflight.delete(key);
     }
@@ -2321,6 +2433,7 @@ async function saveFromPopup() {
   const { word, sentence } = state.lastPopupWord;
   const ru = popupTranslation.textContent;
   if (ru === 'Перевод…' || ru === '…') return;
+  if (popupTranslation.classList.contains('is-error')) return;
   const note = popupTranslationNote?.textContent?.trim();
   const stored = note ? `${ru}\n${note}` : ru;
 
