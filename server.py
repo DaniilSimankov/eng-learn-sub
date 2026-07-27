@@ -1022,8 +1022,25 @@ FUNCTION_WORD_GLOSSARY = {
 }
 
 
+def _normalize_english_spacing(text: str) -> str:
+    """Чинит «I 'm» / «who 's» от старой токенизации субтитров."""
+    s = (text or "").strip()
+    if not s:
+        return ""
+    s = re.sub(r"\b([A-Za-z]+)\s+('(?:[A-Za-z]+))\b", r"\1\2", s)
+    s = re.sub(r"\b([A-Za-z]+)\s+(n't)\b", r"\1\2", s, flags=re.IGNORECASE)
+    s = re.sub(r"\s+([,.!?;:])", r"\1", s)
+    s = re.sub(r"\s{2,}", " ", s)
+    return s.strip()
+
+
+def _is_long_phrase(target: str) -> bool:
+    words = [w for w in _normalize_phrase_key(target).split() if w]
+    return len(words) >= 4 or len((target or "").strip()) > 42
+
+
 def _normalize_phrase_key(phrase: str) -> str:
-    key = (phrase or "").strip().lower()
+    key = _normalize_english_spacing(phrase or "").lower()
     key = re.sub(r"[^a-zA-Z'\s]+", " ", key)
     key = re.sub(r"\s+", " ", key).strip()
     return key
@@ -1070,14 +1087,32 @@ def _normalize_word_gloss_case(text: str) -> str:
     return "".join(parts)
 
 
+def _latin_tokens(text: str) -> list:
+    return re.findall(r"[A-Za-z]+(?:'[A-Za-z]+)?", text or "")
+
+
 def _is_bad_word_translation(result: str, target: str) -> bool:
-    """Отсекает типичные галлюцинации 3B: латиница, слишком длинный бред."""
+    """Отсекает галлюцинации в коротких словарных глоссах."""
     text = (result or "").strip()
     if not text:
         return True
+    # Для длинных фраз допустимы имена собственные из оригинала.
+    if _is_long_phrase(target):
+        if len(text) > 220:
+            return True
+        src = {t.lower() for t in _latin_tokens(target)}
+        for tok in _latin_tokens(text):
+            if tok.lower() not in src and len(tok) > 1:
+                return True
+        return False
+
     if re.search(r"[A-Za-z]", text):
-        return True
-    if len(text) > 48:
+        # Имя собственное из оригинала (Rue, Earth) — ок.
+        src = {t.lower() for t in _latin_tokens(target)}
+        foreign = [t for t in _latin_tokens(text) if t.lower() not in src]
+        if foreign:
+            return True
+    if len(text) > 64:
         return True
     if target and text.lower() == target.strip().lower():
         return True
@@ -1107,20 +1142,60 @@ def _translate_cache_put(key: str, value: str) -> None:
             _translate_cache.popitem(last=False)
 
 
+def _line_translate_messages(cleaned: str) -> list:
+    system = (
+        "Переведи реплику субтитров на естественный разговорный русский. "
+        "Сохраняй смысл и тон, не калькируй слово в слово. "
+        "Имена собственные (Rue, Earth и т.п.) оставляй как в оригинале или в привычной транскрипции. "
+        "Мат и грубости сохраняй без смягчения и цензуры. "
+        "Ответ — только перевод реплики, без кавычек и примечаний."
+    )
+    return [
+        {"role": "system", "content": system},
+        {
+            "role": "user",
+            "content": "I'm thinking to myself like look like somebody Rue would get along with",
+        },
+        {
+            "role": "assistant",
+            "content": "Я сам себе думаю: похоже на кого-то, с кем бы Rue поладила",
+        },
+        {
+            "role": "user",
+            "content": "who's not normally revolving in the same direction as planet Earth",
+        },
+        {
+            "role": "assistant",
+            "content": "который обычно вращается не в ту же сторону, что планета Земля",
+        },
+        {"role": "user", "content": "Shut the fuck up."},
+        {"role": "assistant", "content": "Заткнись нахуй."},
+        {"role": "user", "content": cleaned},
+    ]
+
+
 def ollama_translate(text: str, *, word: Optional[str] = None, sentence: Optional[str] = None) -> str:
-    cleaned = (text or "").strip()
+    cleaned = _normalize_english_spacing(text or "")
     if not cleaned:
         return ""
     if len(cleaned) > 800:
         raise ValueError("Слишком длинный текст (макс. 800 символов)")
 
-    cache_key = _translate_cache_key(cleaned, word, sentence)
+    word_raw = _normalize_english_spacing(word) if word else None
+    sentence = _normalize_english_spacing(sentence) if sentence else sentence
+
+    # Длинное выделение — это перевод фразы, не словарная глосса.
+    if word_raw and _is_long_phrase(word_raw):
+        cleaned = word_raw
+        word_raw = None
+
+    cache_key = _translate_cache_key(cleaned, word_raw, sentence)
     cached = _translate_cache_get(cache_key)
     if cached is not None:
         return cached
 
-    if word:
-        target = word.strip()
+    if word_raw:
+        target = word_raw.strip()
         ctx = (sentence or "").strip()
         gloss = _glossary_lookup(target, ctx)
         if gloss:
@@ -1139,8 +1214,9 @@ def ollama_translate(text: str, *, word: Optional[str] = None, sentence: Optiona
             "не цепляйся к соседнему мату. "
             "Мат, сленг и грубости переводи ПРЯМО и ТОЧНО (блять, хуй, сука, дерьмо и т.д.). "
             "Запрещено: смягчать, цензурить, заменять на «блин/фиг», "
-            "выдумывать несуществующие слова, писать примечания, использовать латиницу. "
-            "Ответ: одно русское слово или короткая словарная глосса. Только кириллица, обычный регистр."
+            "выдумывать несуществующие слова, писать примечания. "
+            "Имена собственные можно оставить латиницей. "
+            "Ответ: одно русское слово или короткая словарная глосса."
         )
         user = f"Переведи только [[...]]:\n{marked}\n\nФраза: {target}"
         messages = [
@@ -1157,12 +1233,17 @@ def ollama_translate(text: str, *, word: Optional[str] = None, sentence: Optiona
             {"role": "assistant", "content": "блять (усиление)"},
             {
                 "role": "user",
+                "content": "Переведи только [[...]]:\nsomebody [[Rue]] would get along with\n\nФраза: Rue",
+            },
+            {"role": "assistant", "content": "Rue (имя)"},
+            {
+                "role": "user",
                 "content": "Переведи только [[...]]:\n[[Shut the fuck up]].\n\nФраза: Shut the fuck up",
             },
             {"role": "assistant", "content": "заткнись нахуй"},
             {"role": "user", "content": user},
         ]
-        num_predict = 36
+        num_predict = 48
         temperature = 0
     else:
         phrase_gloss = _glossary_lookup(cleaned)
@@ -1170,18 +1251,9 @@ def ollama_translate(text: str, *, word: Optional[str] = None, sentence: Optiona
             _translate_cache_put(cache_key, phrase_gloss)
             return phrase_gloss
 
-        system = (
-            "Переведи реплику субтитров на естественный русский. "
-            "Мат и грубости сохраняй без смягчения и цензуры. "
-            "Ответ — только перевод реплики, кириллица, без примечаний."
-        )
-        messages = [
-            {"role": "system", "content": system},
-            {"role": "user", "content": "Shut the fuck up."},
-            {"role": "assistant", "content": "Заткнись нахуй."},
-            {"role": "user", "content": cleaned},
-        ]
-        num_predict = 80
+        messages = _line_translate_messages(cleaned)
+        # Длинным репликам нужно больше токенов, иначе обрезка → каша.
+        num_predict = min(160, max(80, 12 + len(cleaned.split()) * 6))
         temperature = 0.1
 
     payload = {
@@ -1192,7 +1264,7 @@ def ollama_translate(text: str, *, word: Optional[str] = None, sentence: Optiona
             "temperature": temperature,
             "top_p": 0.8,
             "num_predict": num_predict,
-            "num_ctx": 1024,
+            "num_ctx": 2048,
         },
         "messages": messages,
     }
@@ -1207,14 +1279,17 @@ def ollama_translate(text: str, *, word: Optional[str] = None, sentence: Optiona
     if not result:
         raise RuntimeError("Пустой ответ модели")
 
-    if word:
+    if word_raw:
         result = _normalize_word_gloss_case(result)
-        gloss = _glossary_lookup(word, sentence)
-        if gloss and _is_bad_word_translation(result, word):
+        gloss = _glossary_lookup(word_raw, sentence)
+        if gloss and _is_bad_word_translation(result, word_raw):
             _translate_cache_put(cache_key, gloss)
             return gloss
-        if _is_bad_word_translation(result, word):
-            raise RuntimeError("Модель вернула некорректный перевод")
+        if _is_bad_word_translation(result, word_raw):
+            # Не пугаем пользователя ошибкой — переводим как фразу.
+            fallback = ollama_translate(word_raw, word=None, sentence=None)
+            _translate_cache_put(cache_key, fallback)
+            return fallback
 
     _translate_cache_put(cache_key, result)
     return result
@@ -1230,6 +1305,13 @@ def _mark_phrase_in_context(context: str, phrase: str) -> str:
     pattern = re.compile(re.escape(target), re.IGNORECASE)
     match = pattern.search(ctx)
     if not match:
+        # Пробуем с нормализованными апострофами.
+        ctx_n = _normalize_english_spacing(ctx)
+        tgt_n = _normalize_english_spacing(target)
+        match_n = re.compile(re.escape(tgt_n), re.IGNORECASE).search(ctx_n)
+        if match_n:
+            start, end = match_n.span()
+            return f"{ctx_n[:start]}[[{ctx_n[start:end]}]]{ctx_n[end:]}"
         return f"{ctx}\n[[{target}]]"
     start, end = match.span()
     return f"{ctx[:start]}[[{ctx[start:end]}]]{ctx[end:]}"
