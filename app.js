@@ -318,12 +318,10 @@ async function refreshAiStatus() {
       aiStatusEl.title = data.error || `Скачивается ${data.model}`;
       return;
     }
-    aiStatusEl.textContent = data.wordModel && data.wordModel !== data.model
-      ? `${data.wordModel} / ${data.model}`
-      : (data.model || 'ok');
+    aiStatusEl.textContent = data.model || 'ok';
     aiStatusEl.classList.add('is-ok');
-    aiStatusEl.title = data.wordModel && data.wordModel !== data.model
-      ? `Слова: ${data.wordModel} · фразы: ${data.model}`
+    aiStatusEl.title = data.agents
+      ? `Модель ${data.model} · агенты: ${(data.agents || []).join(', ')}`
       : `Локальная модель готова: ${data.model}`;
   } catch {
     aiStatusEl.textContent = 'нет связи';

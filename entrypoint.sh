@@ -2,7 +2,6 @@
 set -euo pipefail
 
 MODEL="${SUBLEARN_OLLAMA_MODEL:-qwen3:4b}"
-WORD_MODEL="${SUBLEARN_OLLAMA_WORD_MODEL:-qwen3:1.7b}"
 OLLAMA_URL="${SUBLEARN_OLLAMA_URL:-http://127.0.0.1:11434}"
 
 echo "[sublearn] starting ollama..."
@@ -32,30 +31,15 @@ for i in $(seq 1 120); do
   fi
 done
 
-ensure_model() {
-  local m="$1"
-  if curl -sf "${OLLAMA_URL}/api/tags" | grep -Fq "${m}"; then
-    return 0
-  fi
-  echo "[sublearn] pulling model ${m} (first run may take several minutes)..."
-  ollama pull "${m}"
-}
-
-ensure_model "${MODEL}"
-if [[ "${WORD_MODEL}" != "${MODEL}" ]]; then
-  ensure_model "${WORD_MODEL}"
+if ! curl -sf "${OLLAMA_URL}/api/tags" | grep -Fq "${MODEL}"; then
+  echo "[sublearn] pulling model ${MODEL} (first run may take several minutes)..."
+  ollama pull "${MODEL}"
 fi
 
-# Выгрузить всё лишнее из RAM (раньше могли висеть 3b+7b ≈ 7 GB).
-unload_other_models() {
-  local keep1="$1"
-  local keep2="$2"
-  local tags
-  tags="$(curl -sf "${OLLAMA_URL}/api/tags" || true)"
-  python3 - "$OLLAMA_URL" "$keep1" "$keep2" <<'PY' || true
+# Выгрузить прочие модели из RAM.
+python3 - "$OLLAMA_URL" "$MODEL" <<'PY' || true
 import json, sys, urllib.request
-url, keep1, keep2 = sys.argv[1], sys.argv[2], sys.argv[3]
-keep = {keep1, keep2}
+url, keep = sys.argv[1], sys.argv[2]
 try:
     tags = json.load(urllib.request.urlopen(url + "/api/tags", timeout=5))
 except Exception:
@@ -64,12 +48,7 @@ for item in tags.get("models") or []:
     name = item.get("name") or item.get("model") or ""
     if not name:
         continue
-    base = name.split(":")[0]
-    keep_hit = any(
-        name == k or name.startswith(k + ":") or name.startswith(k + "-") or base == k.split(":")[0]
-        for k in keep
-    )
-    if keep_hit:
+    if name == keep or name.startswith(f"{keep}-") or name.startswith(f"{keep}:"):
         continue
     req = urllib.request.Request(
         url + "/api/generate",
@@ -82,26 +61,13 @@ for item in tags.get("models") or []:
     except Exception as exc:
         print(f"[sublearn] unload {name} skipped: {exc}")
 PY
-}
 
-unload_other_models "${MODEL}" "${WORD_MODEL}"
+echo "[sublearn] warming ${MODEL}..."
+curl -sf "${OLLAMA_URL}/api/chat" \
+  -H 'Content-Type: application/json' \
+  -d "{\"model\":\"${MODEL}\",\"stream\":false,\"think\":false,\"keep_alive\":\"${OLLAMA_KEEP_ALIVE:-10m}\",\"options\":{\"num_ctx\":512,\"num_predict\":8},\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}" \
+  >/dev/null || echo "[sublearn] warmup skipped"
 
-warmup_model() {
-  local m="$1"
-  local ctx="$2"
-  echo "[sublearn] warming ${m}..."
-  curl -sf "${OLLAMA_URL}/api/chat" \
-    -H 'Content-Type: application/json' \
-    -d "{\"model\":\"${m}\",\"stream\":false,\"keep_alive\":\"${OLLAMA_KEEP_ALIVE:-10m}\",\"options\":{\"num_ctx\":${ctx},\"num_predict\":8},\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}" \
-    >/dev/null || echo "[sublearn] warmup ${m} skipped"
-}
-
-# Греем обе (MAX_LOADED_MODELS≥2), чтобы клики по словам не вытесняли модель реплик.
-warmup_model "${WORD_MODEL}" 256
-if [[ "${WORD_MODEL}" != "${MODEL}" ]]; then
-  warmup_model "${MODEL}" 512
-fi
-
-echo "[sublearn] models ready: words=${WORD_MODEL} lines=${MODEL}"
+echo "[sublearn] model ready: ${MODEL} (word + phrase agents)"
 echo "[sublearn] starting web server on :${SUBLEARN_PORT:-8765}"
 exec python3 /app/server.py
