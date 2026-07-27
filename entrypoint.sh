@@ -2,7 +2,7 @@
 # Web-модуль: ждёт Ollama, тянет модель через API, поднимает Python.
 set -euo pipefail
 
-MODEL="${SUBLEARN_OLLAMA_MODEL:-qwen2.5:7b}"
+MODEL="${SUBLEARN_OLLAMA_MODEL:-qwen3:4b}"
 OLLAMA_URL="${SUBLEARN_OLLAMA_URL:-http://ollama:11434}"
 OLLAMA_URL="${OLLAMA_URL%/}"
 

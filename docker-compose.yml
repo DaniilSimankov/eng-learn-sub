@@ -7,7 +7,7 @@
 # Логи:    docker compose logs -f web ollama
 # Чистка моделей: docker compose down -v
 #
-# Опционально быстрее на Mac (Metal): поставьте Ollama.app, pull qwen2.5:7b,
+# Опционально быстрее на Mac (Metal): поставьте Ollama.app, pull qwen3:4b,
 # затем поднимите только web:
 #   docker compose up -d --build web
 #   # и в environment web:
@@ -28,9 +28,9 @@ services:
     # Не публикуем 11434 на хост по умолчанию — только внутренняя сеть compose.
     expose:
       - "11434"
-    # ИИ только по кнопке «ИИ · разбор» — можно держать 7B; Google остаётся быстрым путём.
-    cpus: "2.5"
-    mem_limit: 6g
+    # ИИ только по кнопке; 4B холодная — Google основной путь.
+    cpus: "2.0"
+    mem_limit: 4g
     healthcheck:
       test: ["CMD-SHELL", "ollama list >/dev/null 2>&1 || exit 1"]
       interval: 5s
@@ -53,13 +53,13 @@ services:
       - ./entrypoint.sh:/entrypoint.sh
     environment:
       SUBLEARN_OLLAMA_URL: http://ollama:11434
-      # 7B лучше держит сленг/контекст; клики по словам идут через Google.
-      SUBLEARN_OLLAMA_MODEL: qwen2.5:7b
+      # 4B — баланс скорость/качество; клики идут через Google.
+      SUBLEARN_OLLAMA_MODEL: qwen3:4b
       SUBLEARN_OLLAMA_NUM_THREAD: "2"
       SUBLEARN_HOST: 0.0.0.0
       SUBLEARN_PORT: "8765"
       SUBLEARN_DATA_DIR: /app/data
-      # Не держать 7B в RAM: Google — основной путь, ИИ грузится только по кнопке.
+      # Не держать модель в RAM: Google — основной путь, ИИ грузится только по кнопке.
       OLLAMA_KEEP_ALIVE: "0"
     depends_on:
       ollama:
