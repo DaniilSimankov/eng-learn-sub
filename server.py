@@ -732,7 +732,7 @@ def proxy_stream(url: str) -> Tuple[bytes, str]:
     return data, ctype
 
 
-OLLAMA_URL = os.environ.get("SUBLEARN_OLLAMA_URL", "http://127.0.0.1:11434").rstrip("/")
+OLLAMA_URL = os.environ.get("SUBLEARN_OLLAMA_URL", "http://ollama:11434").rstrip("/")
 # Одна универсальная модель; «два агента» = разные промпты/num_ctx (слова vs фразы).
 # Для qwen3 обязательно think:false в _chat_translate.
 OLLAMA_MODEL = os.environ.get("SUBLEARN_OLLAMA_MODEL", "qwen3:4b")
