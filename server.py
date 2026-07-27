@@ -1261,6 +1261,59 @@ def _chat_translate(
     return result
 
 
+def _span_translate_messages(marked: str, target: str) -> list:
+    """Перевод куска/реплики с соседним контекстом субтитров (продолжение фразы)."""
+    system = (
+        "Переведи на естественный разговорный русский ТОЛЬКО фрагмент между [[ и ]]. "
+        "Текст вне скобок — соседние реплики субтитров (контекст), их не переводи и не пересказывай. "
+        "Учитывай контекст: это может быть продолжение той же мысли "
+        "(подлежащее, время, смысл «ever since… → things have been…»). "
+        "Не калькируй. Имена оставляй. Мат без цензуры. "
+        "Ответ — только перевод [[...]], без примечаний."
+    )
+    return [
+        {"role": "system", "content": system},
+        {
+            "role": "user",
+            "content": (
+                "Переведи только [[...]]:\n"
+                "I mean ever since I gave my life over to my lord and savior Jesus Christ "
+                "[[things have been like really good]]"
+            ),
+        },
+        {
+            "role": "assistant",
+            "content": "всё стало типа реально хорошо",
+        },
+        {
+            "role": "user",
+            "content": (
+                "Переведи только [[...]]:\n"
+                "[[I'm thinking to myself like look like somebody Rue would get along with]] "
+                "things have been like really good"
+            ),
+        },
+        {
+            "role": "assistant",
+            "content": "я сам себе думаю: похоже на кого-то, с кем бы Rue поладила",
+        },
+        {
+            "role": "user",
+            "content": f"Переведи только [[...]]:\n{marked}",
+        },
+    ]
+
+def _has_broader_context(target: str, sentence: Optional[str]) -> bool:
+    if not sentence or not target:
+        return False
+    sent = _normalize_english_spacing(sentence)
+    tgt = _normalize_english_spacing(target)
+    if not sent or not tgt:
+        return False
+    if _normalize_phrase_key(sent) == _normalize_phrase_key(tgt):
+        return False
+    return tgt.lower() in sent.lower() or _normalize_phrase_key(tgt) in _normalize_phrase_key(sent)
+
 def ollama_translate(text: str, *, word: Optional[str] = None, sentence: Optional[str] = None) -> str:
     cleaned = _normalize_english_spacing(text or "")
     if not cleaned:
@@ -1271,8 +1324,14 @@ def ollama_translate(text: str, *, word: Optional[str] = None, sentence: Optiona
     word_raw = _normalize_english_spacing(word) if word else None
     sentence = _normalize_english_spacing(sentence) if sentence else sentence
 
-    # Длинное выделение — это перевод фразы, не словарная глосса.
-    if word_raw and _is_long_phrase(word_raw):
+    # Фраза (2+ слова) с соседним cue-контекстом — переводим [[фрагмент]], не всю склейку.
+    word_words = len(_normalize_phrase_key(word_raw or "").split()) if word_raw else 0
+    span_mode = bool(
+        word_raw
+        and word_words >= 2
+        and _has_broader_context(word_raw, sentence)
+    )
+    if word_raw and _is_long_phrase(word_raw) and not span_mode:
         cleaned = word_raw
         word_raw = None
 
@@ -1281,7 +1340,24 @@ def ollama_translate(text: str, *, word: Optional[str] = None, sentence: Optiona
     if cached is not None:
         return cached
 
-    if word_raw:
+    if span_mode:
+        target = word_raw.strip()
+        ctx = (sentence or "").strip()
+        if len(ctx) > 420:
+            ctx = ctx[:420].rsplit(" ", 1)[0]
+        marked = _mark_phrase_in_context(ctx, target) if ctx else f"[[{target}]]"
+        phrase_gloss = _glossary_lookup(target)
+        if phrase_gloss and " " in _normalize_phrase_key(target):
+            _translate_cache_put(cache_key, phrase_gloss)
+            return phrase_gloss
+        result = _chat_translate(
+            _span_translate_messages(marked, target),
+            model=OLLAMA_MODEL,
+            num_predict=min(140, max(64, 16 + len(target.split()) * 6)),
+            temperature=0.1,
+            num_ctx=1024,
+        )
+    elif word_raw:
         target = word_raw.strip()
         ctx = (sentence or "").strip()
         gloss = _glossary_lookup(target, ctx)
@@ -1322,7 +1398,7 @@ def ollama_translate(text: str, *, word: Optional[str] = None, sentence: Optiona
             if not _is_bad_word_translation(retry, word_raw):
                 result = retry
             else:
-                # Совсем крайний случай — короткая фраза на 7B.
+                # Совсем крайний случай — короткая фраза на line-модели.
                 result = _chat_translate(
                     _line_translate_messages(word_raw),
                     model=OLLAMA_MODEL,
@@ -1346,7 +1422,6 @@ def ollama_translate(text: str, *, word: Optional[str] = None, sentence: Optiona
 
     _translate_cache_put(cache_key, result)
     return result
-
 
 def _mark_phrase_in_context(context: str, phrase: str) -> str:
     """Оборачивает первое вхождение фразы в [[...]] (без учёта регистра)."""

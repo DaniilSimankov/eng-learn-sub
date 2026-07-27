@@ -1790,9 +1790,11 @@ function renderCurrentCue() {
 let inlineTranslateTimer = 0;
 function scheduleInlineTranslation(text, cueIndex) {
   if (inlineTranslateTimer) clearTimeout(inlineTranslateTimer);
-  const cachedKey = `en-ru:v3:${text}`;
+  const focus = String(text || '').trim();
+  const expanded = buildExpandedCueContext(cueIndex, focus);
+  const cachedKey = `en-ru:v4:${focus.toLowerCase()}|${expanded.toLowerCase()}`;
   if (state.translationCache.has(cachedKey)) {
-    translateText(text).then((ru) => {
+    translateText(text, cueIndex).then((ru) => {
       if (state.currentCueIndex === cueIndex && showRuInline.checked) {
         subtitleTranslation.textContent = ru;
         subtitleTranslation.classList.remove('hidden');
@@ -1804,7 +1806,7 @@ function scheduleInlineTranslation(text, cueIndex) {
   const delay = state.playbackMode === 'video' && !video.paused ? 500 : 200;
   inlineTranslateTimer = setTimeout(() => {
     if (state.currentCueIndex !== cueIndex || !showRuInline.checked) return;
-    translateText(text).then((ru) => {
+    translateText(text, cueIndex).then((ru) => {
       if (state.currentCueIndex === cueIndex && showRuInline.checked) {
         subtitleTranslation.textContent = ru;
         subtitleTranslation.classList.remove('hidden');
@@ -2037,11 +2039,43 @@ function splitTranslationNote(raw) {
   return { main: text, note: '' };
 }
 
+function cueLikelyContinues(prev, next) {
+  const a = String(prev || '').trim();
+  const b = String(next || '').trim();
+  if (!a || !b) return false;
+  // Жёсткий конец предложения — скорее новая реплика.
+  if (/[.!?]["')\]]*\s*$/.test(a)) return false;
+  // Продолжение: со строчной буквы или после запятой/тире.
+  if (/^[a-z]/.test(b)) return true;
+  if (/[,:;:—–\-]\s*$/.test(a)) return true;
+  return false;
+}
+
+/** Склеивает текущий cue с ±1 соседом, если это обрыв одной фразы. */
+function buildExpandedCueContext(cueIndex, focusText) {
+  const cur = String(focusText || state.cues[cueIndex]?.text || '').trim();
+  if (!cur || cueIndex < 0 || !state.cues.length) return cur;
+  const parts = [];
+  const prev = state.cues[cueIndex - 1]?.text?.trim();
+  const next = state.cues[cueIndex + 1]?.text?.trim();
+  if (prev && cueLikelyContinues(prev, cur)) parts.push(prev);
+  parts.push(cur);
+  if (next && cueLikelyContinues(cur, next)) parts.push(next);
+  return parts.join(' ');
+}
+
 function buildTranslationContext(phrase, sentence) {
-  // В модель — только текущая реплика (для выбора значения слова).
-  // Соседние реплики путали маленькую модель: она переводила их вместо слова.
   const idx = state.currentCueIndex;
   const current = (sentence || state.cues[idx]?.text || '').trim();
+  const words = String(phrase || '')
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean);
+  // Одно слово — только текущая реплика (соседи раньше путали модель).
+  // Фраза (2+) — подтянуть продолжения с соседних cue.
+  if (words.length >= 2) {
+    return buildExpandedCueContext(idx, current) || current || phrase || '';
+  }
   return current || phrase || '';
 }
 
@@ -2071,17 +2105,25 @@ async function fetchTranslation(text, { word = null, sentence = null } = {}) {
   return data.translation;
 }
 
-async function translateText(text) {
+async function translateText(text, cueIndex = state.currentCueIndex) {
   if (!state.onlineTranslation) {
     return 'AI-перевод выключен — включите в настройках выше';
   }
-  const key = `en-ru:v3:${text}`;
+  const focus = String(text || '').trim();
+  const expanded = buildExpandedCueContext(cueIndex, focus);
+  const key = `en-ru:v4:${focus.toLowerCase()}|${expanded.toLowerCase()}`;
   if (state.translationCache.has(key)) return state.translationCache.get(key);
   if (state.translationInflight.has(key)) return state.translationInflight.get(key);
 
   const pending = (async () => {
     try {
-      const result = await fetchTranslation(text);
+      let result;
+      if (expanded && expanded !== focus) {
+        // Соседний контекст: переводим только текущую реплику внутри склейки.
+        result = await fetchTranslation(focus, { word: focus, sentence: expanded });
+      } else {
+        result = await fetchTranslation(focus);
+      }
       state.translationCache.set(key, result);
       return result;
     } catch (err) {
@@ -2101,7 +2143,7 @@ async function translateWord(word, sentence = '') {
     return clean;
   }
   const ctx = sentence || state.lastPopupWord?.sentence || '';
-  const key = `word:v7:${clean.toLowerCase()}:${ctx}`;
+  const key = `word:v8:${clean.toLowerCase()}:${ctx}`;
   if (state.translationCache.has(key)) return state.translationCache.get(key);
   if (state.translationInflight.has(key)) return state.translationInflight.get(key);
 
