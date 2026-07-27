@@ -13,6 +13,11 @@ const SUBS_POS_KEY = 'sublearn-subs-pos';
 const SUBS_WIDTH_KEY = 'sublearn-subs-width';
 const PAGE_URL_KEY = 'sublearn-page-url';
 const SEEK_STEP_KEY = 'sublearn-seek-step';
+const WATCH_POS_KEY = 'sublearn-watch-pos';
+const WATCH_POS_MIN_SEC = 5;
+const WATCH_POS_END_RATIO = 0.95;
+const WATCH_POS_SAVE_MS = 2000;
+const WATCH_POS_MAX_ENTRIES = 50;
 const LEARN_PANEL_H_DEFAULT = 200;
 const LEARN_PANEL_H_MIN = 140;
 const LEARN_PANEL_H_MAX_RATIO = 0.55;
@@ -63,6 +68,7 @@ const state = {
   onlineTranslation: loadOnlineTranslationPref(),
   subsScale: loadSubsScale(),
   seekStep: loadSeekStep(),
+  watchContentId: null,
   subsEditMode: false,
   subsDrag: null,
   subsResize: null,
@@ -171,6 +177,110 @@ function savePageUrl(url) {
   try {
     if (url) localStorage.setItem(PAGE_URL_KEY, url);
   } catch { /* ignore */ }
+}
+
+function loadWatchPositions() {
+  try {
+    const raw = localStorage.getItem(WATCH_POS_KEY);
+    if (!raw) return {};
+    const data = JSON.parse(raw);
+    return data && typeof data === 'object' ? data : {};
+  } catch {
+    return {};
+  }
+}
+
+function writeWatchPositions(map) {
+  try {
+    localStorage.setItem(WATCH_POS_KEY, JSON.stringify(map));
+  } catch { /* ignore */ }
+}
+
+function resolveWatchContentId() {
+  if (state.mode === 'file' && state.videoFile) {
+    return `file:${state.videoFile.name}:${state.videoFile.size}`;
+  }
+  const yId = state.resolved?.ylitronId;
+  if (yId) return `ylitron:${yId}`;
+  const url = pageUrl?.value?.trim();
+  if (url) return `url:${url}`;
+  return null;
+}
+
+function getSavedWatchTime(contentId) {
+  if (!contentId) return null;
+  const entry = loadWatchPositions()[contentId];
+  const t = Number(entry?.t);
+  if (!Number.isFinite(t) || t < WATCH_POS_MIN_SEC) return null;
+  return t;
+}
+
+function saveWatchPosition(contentId, seconds) {
+  if (!contentId || !Number.isFinite(seconds) || seconds < WATCH_POS_MIN_SEC) return;
+  const map = loadWatchPositions();
+  map[contentId] = { t: Math.floor(seconds * 10) / 10, at: Date.now() };
+  const keys = Object.keys(map);
+  if (keys.length > WATCH_POS_MAX_ENTRIES) {
+    keys
+      .sort((a, b) => (map[a].at || 0) - (map[b].at || 0))
+      .slice(0, keys.length - WATCH_POS_MAX_ENTRIES)
+      .forEach((k) => delete map[k]);
+  }
+  writeWatchPositions(map);
+}
+
+function clearWatchPosition(contentId) {
+  if (!contentId) return;
+  const map = loadWatchPositions();
+  if (!(contentId in map)) return;
+  delete map[contentId];
+  writeWatchPositions(map);
+}
+
+let lastWatchSaveAt = 0;
+
+function maybeSaveWatchPosition(force = false) {
+  if (state.playbackMode !== 'video') return;
+  const id = state.watchContentId;
+  if (!id) return;
+  const t = video.currentTime;
+  const dur = video.duration;
+  if (!Number.isFinite(t)) return;
+  if (Number.isFinite(dur) && dur > 0 && t >= dur * WATCH_POS_END_RATIO) {
+    clearWatchPosition(id);
+    return;
+  }
+  if (t < WATCH_POS_MIN_SEC) return;
+  const now = Date.now();
+  if (!force && now - lastWatchSaveAt < WATCH_POS_SAVE_MS) return;
+  lastWatchSaveAt = now;
+  saveWatchPosition(id, t);
+}
+
+function restoreWatchPosition() {
+  const id = state.watchContentId;
+  if (!id || state.playbackMode !== 'video') return;
+  const saved = getSavedWatchTime(id);
+  if (saved == null) return;
+
+  const apply = () => {
+    const dur = video.duration;
+    if (!Number.isFinite(dur) || dur <= 0) return;
+    if (saved >= dur * WATCH_POS_END_RATIO) {
+      clearWatchPosition(id);
+      return;
+    }
+    const target = Math.min(saved, Math.max(0, dur - 1));
+    if (Math.abs(video.currentTime - target) < 1) return;
+    video.currentTime = target;
+    syncChromeUI();
+  };
+
+  if (video.readyState >= 1 && Number.isFinite(video.duration) && video.duration > 0) {
+    apply();
+  } else {
+    video.addEventListener('loadedmetadata', apply, { once: true });
+  }
 }
 
 pageUrl?.addEventListener('change', () => {
@@ -1023,6 +1133,11 @@ function initPlayerChrome() {
   video.addEventListener('durationchange', syncChromeUI);
   video.addEventListener('timeupdate', () => {
     syncChromeSeek();
+    maybeSaveWatchPosition();
+  });
+  video.addEventListener('pause', () => maybeSaveWatchPosition(true));
+  video.addEventListener('ended', () => {
+    if (state.watchContentId) clearWatchPosition(state.watchContentId);
   });
 
   syncChromeUI();
@@ -1032,7 +1147,15 @@ function initPlayerChrome() {
 initPlayerChrome();
 
 video.addEventListener('timeupdate', onTimeUpdate);
-video.addEventListener('seeked', onTimeUpdate);
+video.addEventListener('seeked', () => {
+  onTimeUpdate();
+  maybeSaveWatchPosition(true);
+});
+
+window.addEventListener('pagehide', () => maybeSaveWatchPosition(true));
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'hidden') maybeSaveWatchPosition(true);
+});
 
 initVocabulary();
 updateStartButton();
@@ -1173,6 +1296,7 @@ function updateStartUrlButton() {
 function startFilePlayer() {
   if (!state.videoFile || !state.cues.length) return;
   state.playbackMode = 'video';
+  state.watchContentId = resolveWatchContentId();
   setupPlayerUI();
   video.controls = false;
   video.src = URL.createObjectURL(state.videoFile);
@@ -1185,6 +1309,7 @@ function startFilePlayer() {
   video.playbackRate = parseFloat(speedSelect.value);
   syncChromeUI();
   bumpChromeVisible();
+  restoreWatchPosition();
 }
 
 function showPlaybackError(message) {
@@ -1297,6 +1422,7 @@ async function startUrlPlayer() {
     if (await tryPlayStream(streamUrl)) {
       hidePlayerLoading();
       state.playbackMode = 'video';
+      state.watchContentId = resolveWatchContentId();
       video.controls = false;
       video.classList.remove('hidden');
       embedFrame.classList.add('hidden');
@@ -1307,6 +1433,7 @@ async function startUrlPlayer() {
       syncQualityUI();
       syncChromeUI();
       bumpChromeVisible();
+      restoreWatchPosition();
 
       if (state.subsFile && state.cues.length) {
         subsNameUrl.textContent = `${state.subsFile.name} (${state.cues.length} реплик)`;
@@ -1335,6 +1462,7 @@ async function startUrlPlayer() {
     }
   } else if (available !== false) {
     state.playbackMode = 'iframe';
+    state.watchContentId = null;
     video.classList.add('hidden');
     embedFrame.classList.remove('hidden');
     iframeNotice.classList.remove('hidden');
@@ -1490,6 +1618,7 @@ function resetSubtitleState() {
 }
 
 function backToSetup() {
+  maybeSaveWatchPosition(true);
   closePlayerMenu();
   exitLearnFullscreen();
   video.pause();
@@ -1498,6 +1627,7 @@ function backToSetup() {
   embedFrame.removeAttribute('src');
   hidePlayerLoading();
   hidePlaybackError();
+  state.watchContentId = null;
   setupPanel.classList.remove('hidden');
   playerSection.classList.add('hidden');
   hidePopup();
