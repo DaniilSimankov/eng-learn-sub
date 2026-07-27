@@ -1,0 +1,22 @@
+# SubLearn + локальная модель (Ollama) в одном контейнере
+# Запуск: ./start.sh   или   docker compose up -d --build
+# Стоп:   docker compose down
+# Чистка модели: docker compose down -v
+
+services:
+  sublearn:
+    build: .
+    ports:
+      - "8765:8765"
+    volumes:
+      - ollama_data:/root/.ollama
+    environment:
+      SUBLEARN_OLLAMA_URL: http://127.0.0.1:11434
+      SUBLEARN_OLLAMA_MODEL: llama3.2:3b
+      SUBLEARN_HOST: 0.0.0.0
+      SUBLEARN_PORT: "8765"
+      OLLAMA_HOST: 127.0.0.1:11434
+    restart: unless-stopped
+
+volumes:
+  ollama_data:

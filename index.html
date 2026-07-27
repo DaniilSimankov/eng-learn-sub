@@ -1,0 +1,219 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>SubLearn — учи английский с субтитрами</title>
+  <link rel="stylesheet" href="styles.css">
+  <script src="https://cdn.jsdelivr.net/npm/hls.js@1.5.7/dist/hls.min.js"></script>
+</head>
+<body>
+  <div class="app">
+    <header class="header">
+      <div class="logo">
+        <span class="logo__icon">▶</span>
+        <div>
+          <h1>SubLearn</h1>
+          <p class="logo__tagline">Видео + интерактивные субтитры</p>
+        </div>
+      </div>
+      <div class="header__actions">
+        <button type="button" id="btn-vocab" class="btn btn--ghost" title="Словарь">
+          📚 Словарь <span id="vocab-count" class="badge">0</span>
+        </button>
+      </div>
+    </header>
+
+    <main class="main">
+      <section class="setup" id="setup-panel">
+        <div class="mode-tabs">
+          <button type="button" class="mode-tab is-active" data-mode="url">🔗 Ссылка на серию</button>
+          <button type="button" class="mode-tab" data-mode="file">📁 Файлы с диска</button>
+        </div>
+
+        <div id="setup-url" class="setup-mode">
+          <h2>Вставьте ссылку на страницу серии</h2>
+          <p class="hint">
+            Вставьте ссылку NewDeaf — SubLearn достанет <strong>Ylitron ID</strong>
+            и дальше берёт поток и субтитры уже напрямую с ylitron
+            (без остальных плееров и рекламы).
+          </p>
+          <div class="url-row">
+            <input type="url" id="page-url" class="url-input" placeholder="https://27jul.newdeaf.co/serial/5501-jejforija-1-sezon-subtitry.html">
+            <button type="button" id="btn-resolve" class="btn btn--primary">Загрузить</button>
+          </div>
+          <p id="resolve-status" class="status-text"></p>
+          <div id="resolved-info" class="resolved-info hidden">
+            <div class="resolved-info__title" id="resolved-title"></div>
+            <div id="resolved-ylitron" class="resolved-ylitron hidden">
+              Ylitron ID: <code id="resolved-ylitron-id"></code>
+              <span id="resolved-ylitron-path" class="resolved-ylitron__path"></span>
+            </div>
+            <div class="player-picker" id="player-picker"></div>
+          </div>
+          <label class="upload-card upload-card--inline">
+            <input type="file" id="subs-input-url" accept=".srt,.vtt,text/vtt,application/x-subrip" hidden>
+            <span class="upload-card__icon">💬</span>
+            <span class="upload-card__title">Субтитры (англ.)</span>
+            <span class="upload-card__name" id="subs-name-url">Не выбрано — можно добавить позже</span>
+          </label>
+          <label class="control control--skip-ads">
+            <input type="checkbox" id="skip-ads" checked disabled>
+            Пропуск рекламы (ylitron — прямой поток без iframe-рекламы)
+          </label>
+          <label class="control control--privacy">
+            <input type="checkbox" id="online-translation">
+            AI-перевод (локальная модель, en → ru)
+            <span id="ai-status" class="ai-status" title="Статус Ollama">…</span>
+          </label>
+          <p class="hint hint--privacy">
+            Перевод идёт локально через модель в Docker (не Google).
+            Запуск: <code>./start.sh</code>. Словарь хранится только в браузере.
+          </p>
+          <button type="button" id="btn-start-url" class="btn btn--primary" disabled>Открыть плеер</button>
+        </div>
+
+        <div id="setup-file" class="setup-mode hidden">
+          <h2>Загрузите материалы</h2>
+          <p class="hint">Локальное видео + файл субтитров (.srt или .vtt). Полная автосинхронизация.</p>
+          <div class="upload-grid">
+            <label class="upload-card">
+              <input type="file" id="video-input" accept="video/*" hidden>
+              <span class="upload-card__icon">🎬</span>
+              <span class="upload-card__title">Видео</span>
+              <span class="upload-card__name" id="video-name">Не выбрано</span>
+            </label>
+            <label class="upload-card">
+              <input type="file" id="subs-input" accept=".srt,.vtt,text/vtt,application/x-subrip" hidden>
+              <span class="upload-card__icon">💬</span>
+              <span class="upload-card__title">Субтитры</span>
+              <span class="upload-card__name" id="subs-name">Не выбрано</span>
+            </label>
+          </div>
+          <button type="button" id="btn-start" class="btn btn--primary" disabled>Начать просмотр</button>
+        </div>
+      </section>
+
+      <section class="player-section hidden" id="player-section">
+        <div class="player-title-row">
+          <div class="player-title" id="player-title"></div>
+          <button type="button" id="btn-learn-fs" class="btn btn--ghost btn--sm" title="Видео сверху, субтитры снизу">
+            ⛶ Учебный экран
+          </button>
+        </div>
+
+        <div class="player-wrap">
+          <div id="player-loading" class="player-loading hidden">Загрузка плеера…</div>
+          <video id="video" controls controlsList="nofullscreen" preload="metadata" class="hidden"></video>
+          <iframe id="embed-frame" class="embed-frame hidden" allowfullscreen allow="autoplay; fullscreen; encrypted-media"></iframe>
+        </div>
+
+        <div id="iframe-notice" class="notice-banner hidden">
+          Плеер с другого сайта: автосинхронизация субтитров недоступна. Листайте реплики кнопками ← →
+          или укажите время вручную. Перевод слов по клику работает.
+        </div>
+        <div id="playback-error" class="notice-banner notice-banner--error hidden"></div>
+
+        <div
+          class="learn-resize-handle"
+          id="learn-resize-handle"
+          role="separator"
+          aria-orientation="horizontal"
+          aria-label="Потяните, чтобы изменить высоту панели субтитров"
+          title="Потяните вверх/вниз"
+        ></div>
+
+        <div class="player-learn-ui" id="player-learn-ui">
+          <div class="controls-bar">
+            <label class="control control--video-only">
+              Скорость
+              <select id="speed-select">
+                <option value="0.75">0.75×</option>
+                <option value="1" selected>1×</option>
+                <option value="1.25">1.25×</option>
+                <option value="1.5">1.5×</option>
+              </select>
+            </label>
+            <label class="control control--video-only hidden" id="quality-track-wrap">
+              Качество
+              <select id="quality-track-select"></select>
+            </label>
+            <label class="control control--video-only hidden" id="audio-track-wrap">
+              Озвучка
+              <select id="audio-track-select"></select>
+            </label>
+            <label class="control control--video-only hidden" id="subtitle-track-wrap">
+              Субтитры
+              <select id="subtitle-track-select"></select>
+            </label>
+            <div class="control control--iframe-only hidden" id="manual-sync">
+              <span>Время в плеере</span>
+              <input type="text" id="manual-time" class="time-input" placeholder="05:23" title="мин:сек">
+              <button type="button" id="btn-sync-time" class="btn btn--ghost btn--sm">Синхр.</button>
+            </div>
+            <div class="control control--iframe-only hidden">
+              <button type="button" id="btn-prev-cue" class="btn btn--ghost btn--sm">← Реплика</button>
+              <button type="button" id="btn-next-cue" class="btn btn--ghost btn--sm">Реплика →</button>
+            </div>
+            <label class="control">
+              <input type="checkbox" id="pause-on-word" checked>
+              Пауза при клике на слово
+            </label>
+            <label class="control">
+              <input type="checkbox" id="show-ru-inline">
+              Перевод строки снизу
+            </label>
+            <label class="control control--iframe-only hidden" id="skip-ads-live-wrap">
+              <input type="checkbox" id="skip-ads-live" checked>
+              Пропуск рекламы
+            </label>
+            <button type="button" id="btn-replay-line" class="btn btn--ghost btn--sm control--video-only">↺ Повторить фразу</button>
+            <button type="button" id="btn-back-setup" class="btn btn--ghost btn--sm">← Назад</button>
+            <button type="button" id="btn-exit-fs" class="btn btn--ghost btn--sm hidden" title="Выйти из учебного экрана (Esc)">
+              ✕ Выйти
+            </button>
+          </div>
+
+          <div class="subtitle-panel">
+            <div class="subtitle-panel__label" id="subtitle-hint">
+              Клик — слово · Shift+клик или протянуть — фраза · клик по фону — вся реплика
+            </div>
+            <div id="subtitle-display" class="subtitle-display" tabindex="0"></div>
+            <div id="subtitle-translation" class="subtitle-translation hidden"></div>
+            <div id="subtitle-meta" class="subtitle-meta"></div>
+          </div>
+        </div>
+
+        <div id="word-popup" class="popup hidden" role="dialog" aria-label="Перевод слова">
+          <button type="button" class="popup__close" id="popup-close" aria-label="Закрыть">×</button>
+          <div class="popup__word" id="popup-word"></div>
+          <div class="popup__translation" id="popup-translation"></div>
+          <div class="popup__context" id="popup-context"></div>
+          <div class="popup__actions">
+            <button type="button" class="btn btn--primary btn--sm" id="popup-save">+ В словарь</button>
+            <button type="button" class="btn btn--ghost btn--sm" id="popup-speak">🔊 Произнести</button>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <div id="vocab-drawer" class="drawer hidden">
+    <div class="drawer__backdrop" id="vocab-backdrop"></div>
+    <aside class="drawer__panel">
+      <header class="drawer__header">
+        <h2>Мой словарь</h2>
+        <button type="button" class="popup__close" id="vocab-close">×</button>
+      </header>
+      <div class="drawer__tools">
+        <button type="button" id="vocab-export" class="btn btn--ghost btn--sm">Экспорт JSON</button>
+        <button type="button" id="vocab-clear" class="btn btn--ghost btn--sm">Очистить</button>
+      </div>
+      <ul id="vocab-list" class="vocab-list"></ul>
+      <p id="vocab-empty" class="vocab-empty">Пока пусто. Кликайте на незнакомые слова в субтитрах.</p>
+    </aside>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
