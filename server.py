@@ -773,11 +773,14 @@ def ollama_translate(text: str, *, word: Optional[str] = None, sentence: Optiona
         system = (
             "You are an English learning assistant. Reply ONLY in Russian (Cyrillic). "
             "Never use Chinese, Japanese, Korean, or other non-Russian scripts. "
-            "Briefly: translation of the word/phrase in context, then one short note. "
+            "Format strictly:\n"
+            "1) First line: short translation of the Phrase in context.\n"
+            "2) Optional second line starting with 'Примечание:' — one short clarifying note.\n"
+            "Use neighboring lines in Context when the Phrase is incomplete. "
             "No quotes, no preamble, no markdown."
         )
-        user = f"Line: {ctx}\nPhrase: {target}"
-        num_predict = 80
+        user = f"Context: {ctx}\nPhrase: {target}"
+        num_predict = 100
     else:
         system = (
             "You translate English subtitles to natural Russian. "

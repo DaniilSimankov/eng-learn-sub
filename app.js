@@ -8,6 +8,8 @@ const ONLINE_TRANSLATION_KEY = 'sublearn-online-translation';
 const AUDIO_LANG_KEY = 'sublearn-audio-lang';
 const QUALITY_LEVEL_KEY = 'sublearn-quality-level';
 const LEARN_PANEL_H_KEY = 'sublearn-learn-panel-h';
+const SUBS_SIZE_KEY = 'sublearn-subs-size';
+const SUBS_POS_KEY = 'sublearn-subs-pos';
 const LEARN_PANEL_H_DEFAULT = 200;
 const LEARN_PANEL_H_MIN = 140;
 const LEARN_PANEL_H_MAX_RATIO = 0.55;
@@ -30,6 +32,9 @@ const state = {
   preferredAudioLang: loadPreferredAudioLang(),
   skipAds: loadSkipAdsPref(),
   onlineTranslation: loadOnlineTranslationPref(),
+  subsScale: loadSubsScale(),
+  subsEditMode: false,
+  subsDrag: null,
 };
 
 const $ = (sel) => document.querySelector(sel);
@@ -70,6 +75,7 @@ const showRuInline = $('#show-ru-inline');
 const wordPopup = $('#word-popup');
 const popupWord = $('#popup-word');
 const popupTranslation = $('#popup-translation');
+const popupTranslationNote = $('#popup-translation-note');
 const popupContext = $('#popup-context');
 const vocabDrawer = $('#vocab-drawer');
 const vocabList = $('#vocab-list');
@@ -88,6 +94,9 @@ const qualityTrackWrap = $('#quality-track-wrap');
 const qualityTrackSelect = $('#quality-track-select');
 const subtitleTrackWrap = $('#subtitle-track-wrap');
 const subtitleTrackSelect = $('#subtitle-track-select');
+const subsSizeSelect = $('#subs-size-select');
+const btnSubsEdit = $('#btn-subs-edit');
+const subtitlePanel = $('.subtitle-panel');
 
 if (skipAdsSetup) skipAdsSetup.checked = state.skipAds;
 if (skipAdsLive) skipAdsLive.checked = state.skipAds;
@@ -627,6 +636,7 @@ bindSkipAdsToggle(skipAdsLive);
 
 subtitleDisplay.addEventListener('click', (e) => {
   if (e.target.classList.contains('word')) return;
+  if (state.subsEditMode) return;
   translateCurrentLine();
 });
 
@@ -640,11 +650,26 @@ document.addEventListener('click', (e) => {
 });
 
 document.addEventListener('keydown', (e) => {
-  if (!playerSection.classList.contains('hidden') && state.playbackMode === 'iframe') {
+  if (playerSection.classList.contains('hidden')) return;
+
+  const tag = (e.target?.tagName || '').toLowerCase();
+  const typing = tag === 'input' || tag === 'textarea' || tag === 'select' || e.target?.isContentEditable;
+
+  if ((e.code === 'Space' || e.key === ' ') && !typing) {
+    e.preventDefault();
+    e.stopPropagation();
+    if (state.playbackMode === 'video') {
+      if (video.paused) video.play().catch(() => {});
+      else video.pause();
+    }
+    return;
+  }
+
+  if (state.playbackMode === 'iframe') {
     if (e.key === 'ArrowLeft') { e.preventDefault(); stepCue(-1); }
     if (e.key === 'ArrowRight') { e.preventDefault(); stepCue(1); }
   }
-});
+}, true);
 
 $('#btn-vocab').addEventListener('click', () => vocabDrawer.classList.remove('hidden'));
 $('#vocab-close').addEventListener('click', () => vocabDrawer.classList.add('hidden'));
@@ -652,12 +677,33 @@ $('#vocab-backdrop').addEventListener('click', () => vocabDrawer.classList.add('
 $('#vocab-clear').addEventListener('click', clearVocabulary);
 $('#vocab-export').addEventListener('click', exportVocabulary);
 
+if (subsSizeSelect) {
+  subsSizeSelect.value = String(state.subsScale);
+  applySubsScale(state.subsScale);
+  subsSizeSelect.addEventListener('change', () => {
+    const scale = Number(subsSizeSelect.value) || 1;
+    applySubsScale(scale);
+    saveSubsScale(scale);
+  });
+}
+
+btnSubsEdit?.addEventListener('click', () => {
+  state.subsEditMode = !state.subsEditMode;
+  playerSection.classList.toggle('is-subs-edit', state.subsEditMode);
+  btnSubsEdit.classList.toggle('is-active', state.subsEditMode);
+  btnSubsEdit.textContent = state.subsEditMode ? '✓ Готово' : '↕ Позиция';
+  if (!state.subsEditMode) subtitlePanel?.classList.remove('is-dragging');
+});
+
+initSubsPanelDrag();
+
 video.addEventListener('timeupdate', onTimeUpdate);
 video.addEventListener('seeked', onTimeUpdate);
 
 renderVocabulary();
 updateStartButton();
 updateStartUrlButton();
+applySubsPosition(loadSubsPosition());
 
 // --- URL resolve ---
 
@@ -1150,7 +1196,19 @@ function syncLearnFullscreenUI() {
   const on = isLearnFullscreen();
   playerSection.classList.toggle('is-learn-fs', on);
   $('#btn-exit-fs')?.classList.toggle('hidden', !on);
-  if (on) applyLearnPanelHeight(loadLearnPanelHeight());
+  btnSubsEdit?.classList.toggle('hidden', !on);
+  if (!on) {
+    state.subsEditMode = false;
+    playerSection.classList.remove('is-subs-edit');
+    if (btnSubsEdit) {
+      btnSubsEdit.classList.remove('is-active');
+      btnSubsEdit.textContent = '↕ Позиция';
+    }
+  } else {
+    applyLearnPanelHeight(loadLearnPanelHeight());
+    applySubsPosition(loadSubsPosition());
+    applySubsScale(state.subsScale);
+  }
 }
 
 function initLearnPanelResize() {
@@ -1426,8 +1484,8 @@ function bindWordClicks(sentence) {
   state.wordDrag = null;
 
   words.forEach((el, idx) => {
-    el.addEventListener('mousedown', (e) => {
-      if (e.button !== 0) return;
+    el.addEventListener('pointerdown', (e) => {
+      if (e.button !== 0 || state.subsEditMode) return;
       e.preventDefault();
       e.stopPropagation();
       state.wordDrag = { start: idx, end: idx, sentence };
@@ -1439,17 +1497,32 @@ function bindWordClicks(sentence) {
       }
     });
 
-    el.addEventListener('mouseenter', () => {
-      if (!state.wordDrag) return;
-      state.wordDrag.end = idx;
-      applyWordRange(state.wordDrag.start, idx);
-    });
-
     el.addEventListener('click', (e) => {
+      e.preventDefault();
       e.stopPropagation();
     });
   });
 }
+
+let wordDragListenersBound = false;
+function ensureWordDragListeners() {
+  if (wordDragListenersBound) return;
+  wordDragListenersBound = true;
+
+  document.addEventListener('pointermove', (e) => {
+    if (!state.wordDrag) return;
+    const words = getCueWordEls();
+    const el = document.elementFromPoint(e.clientX, e.clientY);
+    const wordEl = el?.closest?.('.word');
+    if (!wordEl || !subtitleDisplay.contains(wordEl)) return;
+    const idx = words.indexOf(wordEl);
+    if (idx < 0) return;
+    state.wordDrag.end = idx;
+    applyWordRange(state.wordDrag.start, idx);
+  });
+}
+
+ensureWordDragListeners();
 
 async function finishWordSelection(sentence) {
   const words = getCueWordEls();
@@ -1470,15 +1543,21 @@ async function finishWordSelection(sentence) {
     get height() { return this.bottom - this.top; },
   };
 
-  state.lastPopupWord = { word: phrase, sentence };
+  const contextSentence = buildTranslationContext(phrase, sentence);
+  state.lastPopupWord = { word: phrase, sentence: contextSentence };
   if (pauseOnWord.checked && state.playbackMode === 'video') video.pause();
 
-  showPopup(phrase, sentence, union);
+  if (document.activeElement && subtitleDisplay.contains(document.activeElement)) {
+    document.activeElement.blur();
+  } else if (document.activeElement === subtitleDisplay) {
+    subtitleDisplay.blur();
+  }
 
-  const translation = await translateWord(phrase, sentence);
+  showPopup(phrase, contextSentence, union);
+
+  const translation = await translateWord(phrase, contextSentence);
   if (state.lastPopupWord?.word === phrase) {
-    popupTranslation.textContent = translation;
-    popupTranslation.classList.remove('loading');
+    setPopupTranslation(translation);
   }
 }
 
@@ -1486,6 +1565,10 @@ function showPopup(word, sentence, rect) {
   popupWord.textContent = word;
   popupTranslation.textContent = 'Перевод…';
   popupTranslation.classList.add('loading');
+  if (popupTranslationNote) {
+    popupTranslationNote.textContent = '';
+    popupTranslationNote.classList.add('hidden');
+  }
   popupContext.textContent = sentence;
   wordPopup.classList.remove('hidden');
 
@@ -1500,7 +1583,47 @@ function showPopup(word, sentence, rect) {
   wordPopup.style.top = `${top}px`;
 }
 
-document.addEventListener('mouseup', async () => {
+function setPopupTranslation(raw) {
+  const { main, note } = splitTranslationNote(raw);
+  popupTranslation.textContent = main || raw;
+  popupTranslation.classList.remove('loading');
+  if (popupTranslationNote) {
+    if (note) {
+      popupTranslationNote.textContent = note;
+      popupTranslationNote.classList.remove('hidden');
+    } else {
+      popupTranslationNote.textContent = '';
+      popupTranslationNote.classList.add('hidden');
+    }
+  }
+}
+
+function splitTranslationNote(raw) {
+  const text = String(raw || '').trim();
+  if (!text) return { main: '', note: '' };
+  const match = text.match(/^(.*?)(?:\n+\s*|\s+)(Примечание\s*[:：].*)$/is);
+  if (match) {
+    return { main: match[1].trim(), note: match[2].trim() };
+  }
+  const idx = text.search(/\bПримечание\s*[:：]/i);
+  if (idx > 0) {
+    return { main: text.slice(0, idx).trim(), note: text.slice(idx).trim() };
+  }
+  return { main: text, note: '' };
+}
+
+function buildTranslationContext(phrase, sentence) {
+  const idx = state.currentCueIndex;
+  const current = (sentence || state.cues[idx]?.text || '').trim();
+  const parts = [];
+  if (idx > 0) parts.push(state.cues[idx - 1].text.trim());
+  if (current) parts.push(current);
+  if (idx >= 0 && idx < state.cues.length - 1) parts.push(state.cues[idx + 1].text.trim());
+  const joined = parts.filter(Boolean).join(' / ');
+  return joined || phrase || current;
+}
+
+document.addEventListener('pointerup', async () => {
   if (!state.wordDrag) return;
   const { sentence } = state.wordDrag;
   const start = state.wordDrag.start;
@@ -1512,6 +1635,10 @@ document.addEventListener('mouseup', async () => {
 
 function hidePopup() {
   wordPopup.classList.add('hidden');
+  if (popupTranslationNote) {
+    popupTranslationNote.textContent = '';
+    popupTranslationNote.classList.add('hidden');
+  }
   clearWordSelection();
 }
 
@@ -1597,12 +1724,14 @@ function saveFromPopup() {
   const { word, sentence } = state.lastPopupWord;
   const ru = popupTranslation.textContent;
   if (ru === 'Перевод…' || ru === '…') return;
+  const note = popupTranslationNote?.textContent?.trim();
+  const stored = note ? `${ru}\n${note}` : ru;
 
   const exists = state.vocabulary.some(
     (v) => v.word.toLowerCase() === word.toLowerCase() && v.context === sentence
   );
   if (!exists) {
-    state.vocabulary.unshift({ word, translation: ru, context: sentence, savedAt: Date.now() });
+    state.vocabulary.unshift({ word, translation: stored, context: sentence, savedAt: Date.now() });
     saveVocabulary();
   }
   hidePopup();
@@ -1618,10 +1747,12 @@ function renderVocabulary() {
   vocabEmpty.classList.add('hidden');
   state.vocabulary.forEach((item, i) => {
     const li = document.createElement('li');
+    const { main, note } = splitTranslationNote(item.translation || '');
     li.innerHTML = `
       <div>
         <div class="en">${escapeHtml(item.word)}</div>
-        <div class="ru">${escapeHtml(item.translation)}</div>
+        <div class="ru">${escapeHtml(main || item.translation || '')}</div>
+        ${note ? `<div class="ctx">${escapeHtml(note)}</div>` : ''}
         ${item.context ? `<div class="ctx">${escapeHtml(item.context)}</div>` : ''}
       </div>
       <button type="button" aria-label="Удалить" data-idx="${i}">×</button>`;
@@ -1652,6 +1783,109 @@ function formatTime(sec) {
   const s = Math.floor(sec % 60);
   const ms = Math.floor((sec % 1) * 1000);
   return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}.${String(ms).padStart(3, '0')}`;
+}
+
+function loadSubsScale() {
+  try {
+    const n = Number(localStorage.getItem(SUBS_SIZE_KEY));
+    if ([0.85, 1, 1.2, 1.45].includes(n)) return n;
+  } catch { /* ignore */ }
+  return 1;
+}
+
+function saveSubsScale(scale) {
+  state.subsScale = scale;
+  try {
+    localStorage.setItem(SUBS_SIZE_KEY, String(scale));
+  } catch { /* ignore */ }
+}
+
+function applySubsScale(scale) {
+  state.subsScale = scale;
+  playerSection?.style.setProperty('--subs-scale', String(scale));
+  document.documentElement.style.setProperty('--subs-scale', String(scale));
+}
+
+function loadSubsPosition() {
+  try {
+    const raw = localStorage.getItem(SUBS_POS_KEY);
+    if (!raw) return null;
+    const pos = JSON.parse(raw);
+    if (typeof pos?.x === 'number' && typeof pos?.y === 'number') return pos;
+  } catch { /* ignore */ }
+  return null;
+}
+
+function saveSubsPosition(pos) {
+  try {
+    if (!pos) localStorage.removeItem(SUBS_POS_KEY);
+    else localStorage.setItem(SUBS_POS_KEY, JSON.stringify(pos));
+  } catch { /* ignore */ }
+}
+
+function applySubsPosition(pos) {
+  if (!subtitlePanel) return;
+  if (!pos) {
+    subtitlePanel.classList.remove('is-custom-pos');
+    subtitlePanel.style.left = '';
+    subtitlePanel.style.top = '';
+    return;
+  }
+  const x = Math.min(92, Math.max(8, pos.x));
+  const y = Math.min(88, Math.max(8, pos.y));
+  subtitlePanel.classList.add('is-custom-pos');
+  subtitlePanel.style.left = `${x}%`;
+  subtitlePanel.style.top = `${y}%`;
+}
+
+function initSubsPanelDrag() {
+  if (!subtitlePanel) return;
+
+  subtitlePanel.addEventListener('pointerdown', (e) => {
+    if (!state.subsEditMode || !isLearnFullscreen()) return;
+    if (e.target.closest('.word')) return;
+    e.preventDefault();
+    const rect = playerSection.getBoundingClientRect();
+    const panelRect = subtitlePanel.getBoundingClientRect();
+    state.subsDrag = {
+      offsetX: e.clientX - panelRect.left - panelRect.width / 2,
+      offsetY: e.clientY - panelRect.top - panelRect.height / 2,
+      sectionLeft: rect.left,
+      sectionTop: rect.top,
+      sectionW: rect.width,
+      sectionH: rect.height,
+    };
+    subtitlePanel.classList.add('is-dragging');
+    subtitlePanel.setPointerCapture?.(e.pointerId);
+  });
+
+  subtitlePanel.addEventListener('pointermove', (e) => {
+    if (!state.subsDrag) return;
+    const { offsetX, offsetY, sectionLeft, sectionTop, sectionW, sectionH } = state.subsDrag;
+    const x = ((e.clientX - offsetX - sectionLeft) / sectionW) * 100;
+    const y = ((e.clientY - offsetY - sectionTop) / sectionH) * 100;
+    applySubsPosition({ x, y });
+  });
+
+  const endDrag = () => {
+    if (!state.subsDrag) return;
+    state.subsDrag = null;
+    subtitlePanel.classList.remove('is-dragging');
+    if (subtitlePanel.classList.contains('is-custom-pos')) {
+      const x = Number.parseFloat(subtitlePanel.style.left);
+      const y = Number.parseFloat(subtitlePanel.style.top);
+      if (Number.isFinite(x) && Number.isFinite(y)) saveSubsPosition({ x, y });
+    }
+  };
+
+  subtitlePanel.addEventListener('pointerup', endDrag);
+  subtitlePanel.addEventListener('pointercancel', endDrag);
+
+  subtitlePanel.addEventListener('dblclick', () => {
+    if (!state.subsEditMode || !isLearnFullscreen()) return;
+    applySubsPosition(null);
+    saveSubsPosition(null);
+  });
 }
 
 function escapeHtml(str) {
