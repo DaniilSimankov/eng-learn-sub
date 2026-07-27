@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-MODEL="${SUBLEARN_OLLAMA_MODEL:-qwen2.5:3b}"
-WORD_MODEL="${SUBLEARN_OLLAMA_WORD_MODEL:-$MODEL}"
+MODEL="${SUBLEARN_OLLAMA_MODEL:-qwen3:4b}"
+WORD_MODEL="${SUBLEARN_OLLAMA_WORD_MODEL:-qwen3:1.7b}"
 OLLAMA_URL="${SUBLEARN_OLLAMA_URL:-http://127.0.0.1:11434}"
 
 echo "[sublearn] starting ollama..."
@@ -96,8 +96,11 @@ warmup_model() {
     >/dev/null || echo "[sublearn] warmup ${m} skipped"
 }
 
-# Одна модель в RAM. Если word≠line — греем только word (частые клики); line подгрузится по запросу.
+# Греем обе (MAX_LOADED_MODELS≥2), чтобы клики по словам не вытесняли модель реплик.
 warmup_model "${WORD_MODEL}" 256
+if [[ "${WORD_MODEL}" != "${MODEL}" ]]; then
+  warmup_model "${MODEL}" 512
+fi
 
 echo "[sublearn] models ready: words=${WORD_MODEL} lines=${MODEL}"
 echo "[sublearn] starting web server on :${SUBLEARN_PORT:-8765}"

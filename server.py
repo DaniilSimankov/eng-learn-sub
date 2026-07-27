@@ -733,9 +733,9 @@ def proxy_stream(url: str) -> Tuple[bytes, str]:
 
 
 OLLAMA_URL = os.environ.get("SUBLEARN_OLLAMA_URL", "http://127.0.0.1:11434").rstrip("/")
-# По умолчанию одна 3B: в Docker на Mac без Metal 3B+7B съедают ~7 GB и CPU.
-OLLAMA_MODEL = os.environ.get("SUBLEARN_OLLAMA_MODEL", "qwen2.5:3b")
-OLLAMA_WORD_MODEL = os.environ.get("SUBLEARN_OLLAMA_WORD_MODEL") or OLLAMA_MODEL
+# Реплики — qwen3:4b; слова — лёгкий qwen3:1.7b (см. docker-compose).
+OLLAMA_MODEL = os.environ.get("SUBLEARN_OLLAMA_MODEL", "qwen3:4b")
+OLLAMA_WORD_MODEL = os.environ.get("SUBLEARN_OLLAMA_WORD_MODEL") or "qwen3:1.7b"
 OLLAMA_KEEP_ALIVE = os.environ.get("OLLAMA_KEEP_ALIVE", "10m")
 try:
     OLLAMA_NUM_THREAD = max(1, int(os.environ.get("SUBLEARN_OLLAMA_NUM_THREAD", "4")))
@@ -1207,6 +1207,49 @@ def _line_translate_messages(cleaned: str) -> list:
     ]
 
 
+def _span_translate_messages(marked: str, target: str) -> list:
+    """Перевод куска/реплики с соседним контекстом субтитров (продолжение фразы)."""
+    system = (
+        "Переведи на естественный разговорный русский ТОЛЬКО фрагмент между [[ и ]]. "
+        "Текст вне скобок — соседние реплики субтитров (контекст), их не переводи и не пересказывай. "
+        "Учитывай контекст: это может быть продолжение той же мысли "
+        "(подлежащее, время, смысл «ever since… → things have been…»). "
+        "Не калькируй. Имена оставляй. Мат без цензуры. "
+        "Ответ — только перевод [[...]], без примечаний."
+    )
+    return [
+        {"role": "system", "content": system},
+        {
+            "role": "user",
+            "content": (
+                "Переведи только [[...]]:\n"
+                "I mean ever since I gave my life over to my lord and savior Jesus Christ "
+                "[[things have been like really good]]"
+            ),
+        },
+        {
+            "role": "assistant",
+            "content": "всё стало типа реально хорошо",
+        },
+        {
+            "role": "user",
+            "content": (
+                "Переведи только [[...]]:\n"
+                "[[I'm thinking to myself like look like somebody Rue would get along with]] "
+                "things have been like really good"
+            ),
+        },
+        {
+            "role": "assistant",
+            "content": "я сам себе думаю: похоже на кого-то, с кем бы Rue поладила",
+        },
+        {
+            "role": "user",
+            "content": f"Переведи только [[...]]:\n{marked}",
+        },
+    ]
+
+
 def _word_translate_messages(marked: str, target: str) -> list:
     system = (
         "Словарь EN→RU. Переведи только фрагмент в [[...]] на русский. "
@@ -1261,48 +1304,6 @@ def _chat_translate(
     return result
 
 
-def _span_translate_messages(marked: str, target: str) -> list:
-    """Перевод куска/реплики с соседним контекстом субтитров (продолжение фразы)."""
-    system = (
-        "Переведи на естественный разговорный русский ТОЛЬКО фрагмент между [[ и ]]. "
-        "Текст вне скобок — соседние реплики субтитров (контекст), их не переводи и не пересказывай. "
-        "Учитывай контекст: это может быть продолжение той же мысли "
-        "(подлежащее, время, смысл «ever since… → things have been…»). "
-        "Не калькируй. Имена оставляй. Мат без цензуры. "
-        "Ответ — только перевод [[...]], без примечаний."
-    )
-    return [
-        {"role": "system", "content": system},
-        {
-            "role": "user",
-            "content": (
-                "Переведи только [[...]]:\n"
-                "I mean ever since I gave my life over to my lord and savior Jesus Christ "
-                "[[things have been like really good]]"
-            ),
-        },
-        {
-            "role": "assistant",
-            "content": "всё стало типа реально хорошо",
-        },
-        {
-            "role": "user",
-            "content": (
-                "Переведи только [[...]]:\n"
-                "[[I'm thinking to myself like look like somebody Rue would get along with]] "
-                "things have been like really good"
-            ),
-        },
-        {
-            "role": "assistant",
-            "content": "я сам себе думаю: похоже на кого-то, с кем бы Rue поладила",
-        },
-        {
-            "role": "user",
-            "content": f"Переведи только [[...]]:\n{marked}",
-        },
-    ]
-
 def _has_broader_context(target: str, sentence: Optional[str]) -> bool:
     if not sentence or not target:
         return False
@@ -1313,6 +1314,7 @@ def _has_broader_context(target: str, sentence: Optional[str]) -> bool:
     if _normalize_phrase_key(sent) == _normalize_phrase_key(tgt):
         return False
     return tgt.lower() in sent.lower() or _normalize_phrase_key(tgt) in _normalize_phrase_key(sent)
+
 
 def ollama_translate(text: str, *, word: Optional[str] = None, sentence: Optional[str] = None) -> str:
     cleaned = _normalize_english_spacing(text or "")
@@ -1422,6 +1424,7 @@ def ollama_translate(text: str, *, word: Optional[str] = None, sentence: Optiona
 
     _translate_cache_put(cache_key, result)
     return result
+
 
 def _mark_phrase_in_context(context: str, phrase: str) -> str:
     """Оборачивает первое вхождение фразы в [[...]] (без учёта регистра)."""

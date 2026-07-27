@@ -3,12 +3,13 @@
 # Стоп:   docker compose down
 # Чистка модели: docker compose down -v
 #
-# Память: по умолчанию одна модель qwen2.5:3b (~2–2.5 GB).
-# Не держите 3b+7b вместе — в Docker Desktop на 8 GB это упирается в лимит.
-# Если RAM позволяет (≈10+ GB контейнеру), можно вернуть 7b для фраз:
-#   SUBLEARN_OLLAMA_MODEL=qwen2.5:7b
-#   SUBLEARN_OLLAMA_WORD_MODEL=qwen2.5:3b
-#   OLLAMA_MAX_LOADED_MODELS=1   # всё равно по одной в RAM
+# Память: реплики qwen3:4b (~2.5–3 GB) + слова qwen3:1.7b (~1.2 GB).
+# OLLAMA_MAX_LOADED_MODELS=2 — обе в RAM без thrashing при кликах.
+# Если мало RAM — одна модель на всё:
+#   SUBLEARN_OLLAMA_MODEL=qwen3:4b
+#   SUBLEARN_OLLAMA_WORD_MODEL=qwen3:4b
+#   OLLAMA_MAX_LOADED_MODELS=1
+#   mem_limit: 4g
 
 services:
   sublearn:
@@ -25,18 +26,18 @@ services:
       - ./ad-skip.js:/app/ad-skip.js
     environment:
       SUBLEARN_OLLAMA_URL: http://127.0.0.1:11434
-      # Одна модель = меньше RAM/CPU. Глоссарий + промпты тянут качество.
-      SUBLEARN_OLLAMA_MODEL: qwen2.5:3b
-      SUBLEARN_OLLAMA_WORD_MODEL: qwen2.5:3b
+      # Реплики — умнее; слова — легче и быстрее.
+      SUBLEARN_OLLAMA_MODEL: qwen3:4b
+      SUBLEARN_OLLAMA_WORD_MODEL: qwen3:1.7b
       SUBLEARN_OLLAMA_NUM_THREAD: "4"
       SUBLEARN_HOST: 0.0.0.0
       SUBLEARN_PORT: "8765"
       SUBLEARN_DATA_DIR: /app/data
       OLLAMA_HOST: 127.0.0.1:11434
-      OLLAMA_MAX_LOADED_MODELS: "1"
+      OLLAMA_MAX_LOADED_MODELS: "2"
       OLLAMA_NUM_PARALLEL: "1"
       OLLAMA_KEEP_ALIVE: "10m"
-    mem_limit: 4g
+    mem_limit: 6g
     cpus: "4.0"
     restart: unless-stopped
 
