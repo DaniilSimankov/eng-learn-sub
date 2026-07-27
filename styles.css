@@ -422,12 +422,61 @@ body {
   display: flex;
   flex-direction: column;
   gap: 0.35rem;
-  margin-bottom: 1.25rem;
+  margin-bottom: 1rem;
   padding: 0.7rem 0.85rem;
   background: var(--surface-2);
   border-radius: 8px;
   border-left: 3px solid var(--accent);
   max-width: 520px;
+}
+
+.net-block {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+  margin-bottom: 1.25rem;
+  padding: 0.7rem 0.85rem;
+  background: var(--surface-2);
+  border-radius: 8px;
+  border-left: 3px solid #34d399;
+  max-width: 520px;
+}
+
+.net-block .control {
+  width: 100%;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  color: var(--text);
+}
+
+.net-block .url-input--compact {
+  flex: 1 1 12rem;
+  min-width: 0;
+  max-width: 100%;
+  font-size: 0.85rem;
+  padding: 0.35rem 0.55rem;
+}
+
+.net-block__actions {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+}
+
+.net-status {
+  font-size: 0.78rem;
+  color: var(--text-muted);
+  line-height: 1.35;
+}
+
+.net-status.is-ok {
+  color: var(--success);
+}
+
+.net-status.is-err {
+  color: #fca5a5;
 }
 
 .control--privacy {

@@ -22,7 +22,15 @@ from urllib.parse import parse_qs, quote, urljoin, urlparse, urlunparse
 ROOT = Path(__file__).resolve().parent
 DATA_DIR = Path(os.environ.get("SUBLEARN_DATA_DIR", str(ROOT / "data")))
 DB_PATH = DATA_DIR / "vocab.db"
+NET_CONFIG_PATH = DATA_DIR / "net.json"
 _db_lock = threading.RLock()
+_net_lock = threading.RLock()
+
+# mode: direct | split ; proxy: http://host.docker.internal:7890
+_net_config = {
+    "mode": "direct",
+    "proxy": (os.environ.get("SUBLEARN_PROXY") or "").strip(),
+}
 USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
     "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
@@ -194,19 +202,157 @@ def validate_media_url(url: str) -> str:
     raise SecurityError("URL медиа не из доверенного списка CDN")
 
 
-def fetch_url(url: str, timeout: int = 20) -> str:
-    req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+def _in_docker() -> bool:
+    return Path("/.dockerenv").exists() or bool(os.environ.get("SUBLEARN_IN_DOCKER"))
+
+
+def _normalize_proxy_url(proxy: str) -> str:
+    proxy = (proxy or "").strip()
+    if not proxy:
+        return ""
+    parsed = urlparse(proxy)
+    if not parsed.scheme or not parsed.hostname:
+        raise ValueError(
+            "Прокси: ожидается URL вида http://host.docker.internal:7890 "
+            "или socks5://host.docker.internal:1080"
+        )
+    scheme = parsed.scheme.lower()
+    if scheme not in ("http", "https", "socks5", "socks4", "socks5h"):
+        raise ValueError("Поддерживаются только http(s) и socks4/5 прокси")
+    host = parsed.hostname
+    # Из контейнера 127.0.0.1 — это сам контейнер, не Mac
+    if _in_docker() and host in ("127.0.0.1", "localhost"):
+        port = parsed.port
+        auth = ""
+        if parsed.username:
+            auth = quote(parsed.username, safe="")
+            if parsed.password:
+                auth += ":" + quote(parsed.password, safe="")
+            auth += "@"
+        netloc = f"{auth}host.docker.internal" + (f":{port}" if port else "")
+        proxy = urlunparse((scheme, netloc, parsed.path or "", "", parsed.query, ""))
+    return proxy
+
+
+def load_net_config() -> dict:
+    with _net_lock:
+        if NET_CONFIG_PATH.exists():
+            try:
+                data = json.loads(NET_CONFIG_PATH.read_text(encoding="utf-8"))
+                if isinstance(data, dict):
+                    mode = data.get("mode") or "direct"
+                    if mode not in ("direct", "split"):
+                        mode = "direct"
+                    proxy = str(data.get("proxy") or "").strip()
+                    env_proxy = (os.environ.get("SUBLEARN_PROXY") or "").strip()
+                    _net_config["mode"] = mode
+                    _net_config["proxy"] = proxy or env_proxy
+            except Exception:  # noqa: BLE001
+                pass
+        return dict(_net_config)
+
+
+def save_net_config(*, mode: Optional[str] = None, proxy: Optional[str] = None) -> dict:
+    with _net_lock:
+        if mode is not None:
+            if mode not in ("direct", "split"):
+                raise ValueError("mode: direct или split")
+            _net_config["mode"] = mode
+        if proxy is not None:
+            normalized = _normalize_proxy_url(proxy) if str(proxy).strip() else ""
+            _net_config["proxy"] = normalized
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
+        NET_CONFIG_PATH.write_text(
+            json.dumps(_net_config, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        return dict(_net_config)
+
+
+def get_net_config() -> dict:
+    with _net_lock:
+        return dict(_net_config)
+
+
+def resolve_route(kind: str) -> str:
+    """kind: page | media → direct | proxy"""
+    cfg = get_net_config()
+    if cfg.get("mode") == "split":
+        if kind == "page":
+            if not cfg.get("proxy"):
+                raise ValueError(
+                    "Режим «Сплит»: укажите локальный прокси VPN "
+                    "(например http://host.docker.internal:7890)"
+                )
+            return "proxy"
+        return "direct"
+    return "direct"
+
+
+def _build_opener(route: str):
     ctx = ssl.create_default_context()
-    with urllib.request.urlopen(req, timeout=timeout, context=ctx) as resp:
+    https_handler = urllib.request.HTTPSHandler(context=ctx)
+    if route != "proxy":
+        return urllib.request.build_opener(
+            urllib.request.ProxyHandler({}),
+            https_handler,
+        )
+
+    proxy = _normalize_proxy_url(get_net_config().get("proxy") or "")
+    if not proxy:
+        raise ValueError("Прокси не задан")
+    scheme = urlparse(proxy).scheme.lower()
+
+    if scheme in ("socks5", "socks5h", "socks4"):
+        try:
+            import socks  # type: ignore
+            from sockshandler import SocksiPyHandler  # type: ignore
+        except ImportError as exc:
+            raise ValueError(
+                "Для socks-прокси нужен пакет PySocks в контейнере. "
+                "Используйте HTTP-прокси VPN-клиента (часто тот же порт)."
+            ) from exc
+        host = urlparse(proxy).hostname or "127.0.0.1"
+        port = urlparse(proxy).port or 1080
+        sock_type = socks.SOCKS5 if scheme.startswith("socks5") else socks.SOCKS4
+        rdns = scheme == "socks5h"
+        return urllib.request.build_opener(
+            SocksiPyHandler(sock_type, host, port, rdns=rdns),
+            https_handler,
+        )
+
+    return urllib.request.build_opener(
+        urllib.request.ProxyHandler({"http": proxy, "https": proxy}),
+        https_handler,
+    )
+
+
+def _open_request(req: urllib.request.Request, timeout: int, route: str):
+    opener = _build_opener(route)
+    return opener.open(req, timeout=timeout)
+
+
+def fetch_url(url: str, timeout: int = 20, *, kind: str = "media", route: str = "auto") -> str:
+    if route == "auto":
+        route = resolve_route(kind)
+    req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+    with _open_request(req, timeout, route) as resp:
         charset = resp.headers.get_content_charset() or "utf-8"
         return resp.read().decode(charset, errors="replace")
 
 
-def fetch_binary(url: str, timeout: int = 30) -> Tuple[bytes, str]:
+def fetch_binary(
+    url: str,
+    timeout: int = 30,
+    *,
+    kind: str = "media",
+    route: str = "auto",
+) -> Tuple[bytes, str]:
     validate_media_url(url)
+    if route == "auto":
+        route = resolve_route(kind)
     req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
-    ctx = ssl.create_default_context()
-    with urllib.request.urlopen(req, timeout=timeout, context=ctx) as resp:
+    with _open_request(req, timeout, route) as resp:
         data = resp.read()
         ctype = resp.headers.get("Content-Type") or "application/octet-stream"
         return data, ctype
@@ -217,10 +363,13 @@ def embed_is_available(url: str) -> bool:
         validate_embed_url(url)
     except SecurityError:
         return False
-    ctx = ssl.create_default_context()
+    try:
+        route = resolve_route("media")
+    except ValueError:
+        route = "direct"
     try:
         req = urllib.request.Request(url, method="HEAD", headers={"User-Agent": USER_AGENT})
-        with urllib.request.urlopen(req, timeout=4, context=ctx) as resp:
+        with _open_request(req, 4, route) as resp:
             return resp.status < 400
     except urllib.error.HTTPError as exc:
         if exc.code in (405, 501):
@@ -228,6 +377,35 @@ def embed_is_available(url: str) -> bool:
         return exc.code < 400
     except urllib.error.URLError:
         return False
+
+
+def probe_external_ip(route: str) -> dict:
+    url = "https://api.ipify.org?format=json"
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+        with _open_request(req, 8, route) as resp:
+            data = json.loads(resp.read().decode("utf-8", errors="replace"))
+            return {"ok": True, "route": route, "ip": data.get("ip"), "error": None}
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "route": route, "ip": None, "error": str(exc)}
+
+
+def net_status() -> dict:
+    cfg = get_net_config()
+    direct = probe_external_ip("direct")
+    via_proxy = None
+    if cfg.get("proxy"):
+        try:
+            via_proxy = probe_external_ip("proxy")
+        except Exception as exc:  # noqa: BLE001
+            via_proxy = {"ok": False, "route": "proxy", "ip": None, "error": str(exc)}
+    return {
+        "mode": cfg.get("mode"),
+        "proxy": cfg.get("proxy") or "",
+        "inDocker": _in_docker(),
+        "direct": direct,
+        "proxyProbe": via_proxy,
+    }
 
 
 def clean_text(raw: str) -> str:
@@ -588,7 +766,7 @@ def resolve_page(url: str) -> dict:
             result.update(ref)
         return result
 
-    page_html = fetch_url(url)
+    page_html = fetch_url(url, kind="page")
     iframe_urls = extract_players(page_html)
     if not iframe_urls:
         raise ValueError(
@@ -712,8 +890,8 @@ def proxy_stream(url: str) -> Tuple[bytes, str]:
 
 
 OLLAMA_URL = os.environ.get("SUBLEARN_OLLAMA_URL", "http://127.0.0.1:11434").rstrip("/")
-# Qwen2.5 3B лучше держит EN→RU, чем llama3.2; 7B+ в Docker на Mac (без Metal) очень медленный
-OLLAMA_MODEL = os.environ.get("SUBLEARN_OLLAMA_MODEL", "qwen2.5:3b")
+# Qwen2.5 7B заметно лучше на идиомах/мате; в Docker на Mac (без Metal) медленнее 3B
+OLLAMA_MODEL = os.environ.get("SUBLEARN_OLLAMA_MODEL", "qwen2.5:7b")
 
 
 def init_vocab_db() -> None:
@@ -946,12 +1124,97 @@ VULGAR_GLOSSARY = {
     "goddamned": "чёртов",
 }
 
+# Многословные идиомы — всегда раньше LLM (3B плохо их знает).
+PHRASE_GLOSSARY = {
+    "shut the fuck up": "заткнись нахуй",
+    "shut the hell up": "заткнись уже",
+    "shut up": "заткнись",
+    "fuck off": "отъебись",
+    "fuck you": "пошёл нахуй",
+    "fuck me": "блядь; охуеть",
+    "what the fuck": "что за хуйня",
+    "what the hell": "какого чёрта",
+    "the fuck": "(усиление) блять",
+    "get the fuck out": "проваливай нахуй",
+    "go fuck yourself": "иди нахуй",
+    "are you fucking kidding me": "ты ёбанутый?",
+    "no fucking way": "нихуя себе",
+    "oh my fucking god": "ёбаный в рот",
+}
 
-def _glossary_lookup(phrase: str) -> Optional[str]:
-    key = re.sub(r"^[^a-zA-Z']+|[^a-zA-Z']+$", "", (phrase or "").strip()).lower()
+# Односложные слова, которые 3B ломает рядом с матом.
+COMMON_WORD_GLOSSARY = {
+    "shut": "закрыть; заткнуть",
+}
+
+# Артикли: 3B в контексте мата часто отвечает «фUCK» вместо значения артикля.
+FUNCTION_WORD_GLOSSARY = {
+    "the": "определённый артикль the",
+    "a": "неопределённый артикль a",
+    "an": "неопределённый артикль an",
+}
+
+
+def _normalize_phrase_key(phrase: str) -> str:
+    key = (phrase or "").strip().lower()
+    key = re.sub(r"[^a-zA-Z'\s]+", " ", key)
+    key = re.sub(r"\s+", " ", key).strip()
+    return key
+
+
+def _glossary_lookup(phrase: str, sentence: Optional[str] = None) -> Optional[str]:
+    key = _normalize_phrase_key(phrase)
     if not key:
         return None
-    return VULGAR_GLOSSARY.get(key)
+
+    if key in PHRASE_GLOSSARY:
+        return PHRASE_GLOSSARY[key]
+
+    if " " not in key and key in FUNCTION_WORD_GLOSSARY:
+        return FUNCTION_WORD_GLOSSARY[key]
+
+    if " " not in key and key in COMMON_WORD_GLOSSARY:
+        return COMMON_WORD_GLOSSARY[key]
+
+    if " " not in key and key in VULGAR_GLOSSARY:
+        ctx = _normalize_phrase_key(sentence or "")
+        # В «shut the fuck up» / «the fuck» слово fuck — усилитель, не глагол.
+        if key == "fuck" and ctx and re.search(
+            r"\b(shut|what|where|who|how|get|get the|the)\b.*\bfuck\b|\bfuck\b.*\b(up|out|off)\b",
+            ctx,
+        ):
+            return "(усиление) блять"
+        return VULGAR_GLOSSARY[key]
+
+    return None
+
+
+def _normalize_word_gloss_case(text: str) -> str:
+    """Убирает кривой регистр вроде «закрЫть» → «закрыть»."""
+    if not text or re.search(r"[A-Za-z]", text):
+        return text
+    parts = []
+    for chunk in re.split(r"(\s+)", text):
+        if not chunk or chunk.isspace():
+            parts.append(chunk)
+            continue
+        # Сохраняем скобочные пометки как есть после lower.
+        parts.append(chunk.lower())
+    return "".join(parts)
+
+
+def _is_bad_word_translation(result: str, target: str) -> bool:
+    """Отсекает типичные галлюцинации 3B: латиница, слишком длинный бред."""
+    text = (result or "").strip()
+    if not text:
+        return True
+    if re.search(r"[A-Za-z]", text):
+        return True
+    if len(text) > 48:
+        return True
+    if target and text.lower() == target.strip().lower():
+        return True
+    return False
 
 
 def ollama_translate(text: str, *, word: Optional[str] = None, sentence: Optional[str] = None) -> str:
@@ -963,11 +1226,11 @@ def ollama_translate(text: str, *, word: Optional[str] = None, sentence: Optiona
 
     if word:
         target = word.strip()
-        gloss = _glossary_lookup(target)
-        if gloss and " " not in target.strip():
+        ctx = (sentence or "").strip()
+        gloss = _glossary_lookup(target, ctx)
+        if gloss:
             return gloss
 
-        ctx = (sentence or "").strip()
         if len(ctx) > 280:
             ctx = ctx[:280].rsplit(" ", 1)[0]
 
@@ -976,14 +1239,26 @@ def ollama_translate(text: str, *, word: Optional[str] = None, sentence: Optiona
         system = (
             "Ты двуязычный словарь EN→RU для сериалов 18+. "
             "Переведи ТОЛЬКО фрагмент между [[ и ]]. Остальное — контекст, не переводи его. "
+            "Если [[...]] — артикль/служебное слово (the, a, of…), дай краткое словарное значение, "
+            "не цепляйся к соседнему мату. "
             "Мат, сленг и грубости переводи ПРЯМО и ТОЧНО (блять, хуй, сука, дерьмо и т.д.). "
             "Запрещено: смягчать, цензурить, заменять на «блин/фиг», "
-            "выдумывать несуществующие слова, писать примечания. "
-            "Ответ: одно русское слово или короткая словарная глосса. Только кириллица."
+            "выдумывать несуществующие слова, писать примечания, использовать латиницу. "
+            "Ответ: одно русское слово или короткая словарная глосса. Только кириллица, обычный регистр."
         )
         user = f"Переведи только [[...]]:\n{marked}\n\nФраза: {target}"
         messages = [
             {"role": "system", "content": system},
+            {
+                "role": "user",
+                "content": "Переведи только [[...]]:\nShut [[the]] fuck up.\n\nФраза: the",
+            },
+            {"role": "assistant", "content": "определённый артикль the"},
+            {
+                "role": "user",
+                "content": "Переведи только [[...]]:\n[[Shut]] the fuck up.\n\nФраза: Shut",
+            },
+            {"role": "assistant", "content": "закрыть; заткнуть"},
             {
                 "role": "user",
                 "content": "Переведи только [[...]]:\nof course I'd [[fucking]] go.\n\nФраза: fucking",
@@ -991,24 +1266,23 @@ def ollama_translate(text: str, *, word: Optional[str] = None, sentence: Optiona
             {"role": "assistant", "content": "блять (усиление)"},
             {
                 "role": "user",
-                "content": "Переведи только [[...]]:\nThis is [[shit]].\n\nФраза: shit",
-            },
-            {"role": "assistant", "content": "дерьмо; херня"},
-            {
-                "role": "user",
-                "content": "Переведи только [[...]]:\nWhat a [[bitch]].\n\nФраза: bitch",
-            },
-            {"role": "assistant", "content": "сука"},
-            {
-                "role": "user",
                 "content": "Переведи только [[...]]:\nI don't [[know]].\n\nФраза: know",
             },
             {"role": "assistant", "content": "знать"},
+            {
+                "role": "user",
+                "content": "Переведи только [[...]]:\n[[Shut the fuck up]].\n\nФраза: Shut the fuck up",
+            },
+            {"role": "assistant", "content": "заткнись нахуй"},
             {"role": "user", "content": user},
         ]
         num_predict = 36
         temperature = 0
     else:
+        phrase_gloss = _glossary_lookup(cleaned)
+        if phrase_gloss and " " in _normalize_phrase_key(cleaned):
+            return phrase_gloss
+
         system = (
             "Переведи реплику субтитров на естественный русский. "
             "Мат и грубости сохраняй без смягчения и цензуры. "
@@ -1016,6 +1290,8 @@ def ollama_translate(text: str, *, word: Optional[str] = None, sentence: Optiona
         )
         messages = [
             {"role": "system", "content": system},
+            {"role": "user", "content": "Shut the fuck up."},
+            {"role": "assistant", "content": "Заткнись нахуй."},
             {"role": "user", "content": cleaned},
         ]
         num_predict = 80
@@ -1045,12 +1321,14 @@ def ollama_translate(text: str, *, word: Optional[str] = None, sentence: Optiona
         raise RuntimeError("Пустой ответ модели")
 
     if word:
-        gloss = _glossary_lookup(word)
-        if gloss and (re.search(r"[A-Za-z]", result) or len(result) > 40):
+        result = _normalize_word_gloss_case(result)
+        gloss = _glossary_lookup(word, sentence)
+        if gloss and _is_bad_word_translation(result, word):
             return gloss
+        if _is_bad_word_translation(result, word):
+            raise RuntimeError("Модель вернула некорректный перевод")
 
     return result
-
 
 
 def _mark_phrase_in_context(context: str, phrase: str) -> str:
@@ -1199,6 +1477,15 @@ class SubLearnHandler(SimpleHTTPRequestHandler):
         if parsed.path == "/api/ai-status":
             self._json_response(200, ollama_status())
             return
+        if parsed.path == "/api/net-config":
+            self._json_response(200, load_net_config())
+            return
+        if parsed.path == "/api/net-status":
+            try:
+                self._json_response(200, net_status())
+            except Exception as exc:  # noqa: BLE001
+                self._json_response(500, {"error": str(exc)})
+            return
         if parsed.path == "/api/vocab":
             try:
                 self._json_response(200, {"items": vocab_list()})
@@ -1246,6 +1533,23 @@ class SubLearnHandler(SimpleHTTPRequestHandler):
 
     def do_POST(self):
         parsed = urlparse(self.path)
+        if parsed.path == "/api/net-config":
+            try:
+                payload = self._read_json_body()
+                mode = payload.get("mode")
+                proxy = payload.get("proxy")
+                kwargs = {}
+                if mode is not None:
+                    kwargs["mode"] = str(mode)
+                if "proxy" in payload:
+                    kwargs["proxy"] = "" if proxy is None else str(proxy)
+                cfg = save_net_config(**kwargs)
+                self._json_response(200, cfg)
+            except ValueError as exc:
+                self._json_response(400, {"error": str(exc)})
+            except Exception as exc:  # noqa: BLE001
+                self._json_response(500, {"error": str(exc)})
+            return
         if parsed.path == "/api/vocab":
             try:
                 payload = self._read_json_body()
@@ -1333,10 +1637,13 @@ def main():
     host = os.environ.get("SUBLEARN_HOST", "127.0.0.1")
     port = int(os.environ.get("SUBLEARN_PORT", "8765"))
     init_vocab_db()
+    load_net_config()
     server = ThreadingHTTPServer((host, port), SubLearnHandler)
     print(f"SubLearn: http://127.0.0.1:{port}")
     print(f"AI: Ollama {OLLAMA_URL} model={OLLAMA_MODEL}")
     print(f"Vocab DB: {DB_PATH}")
+    cfg = get_net_config()
+    print(f"Net: mode={cfg.get('mode')} proxy={cfg.get('proxy') or '(none)'}")
     print("Остановка: Ctrl+C")
     server.serve_forever()
 
