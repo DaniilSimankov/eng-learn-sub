@@ -16,6 +16,10 @@ const SEEK_STEP_KEY = 'sublearn-seek-step';
 const WATCH_POS_KEY = 'sublearn-watch-pos';
 const WATCH_SESSION_KEY = 'sublearn-watch-session';
 const POPUP_POS_KEY = 'sublearn-popup-pos';
+const POPUP_SIZE_KEY = 'sublearn-popup-size';
+const POPUP_W_MIN = 360;
+const POPUP_H_MIN = 200;
+const POPUP_W_DEFAULT = 640;
 const WATCH_POS_MIN_SEC = 5;
 const WATCH_POS_END_RATIO = 0.95;
 const WATCH_POS_SAVE_MS = 2000;
@@ -58,7 +62,9 @@ const state = {
   wordDrag: null,
   ignorePopupHideUntil: 0,
   popupDrag: null,
+  popupResize: null,
   popupPinnedPos: loadPopupPos(),
+  popupPinnedSize: loadPopupSize(),
   preferredVoiceURI: null,
   translationCache: new Map(),
   translationInflight: new Map(),
@@ -2411,6 +2417,76 @@ function clearPopupPos() {
   savePopupPos(null);
 }
 
+function loadPopupSize() {
+  try {
+    const raw = localStorage.getItem(POPUP_SIZE_KEY);
+    if (!raw) return null;
+    const data = JSON.parse(raw);
+    const width = Number(data?.width);
+    const height = Number(data?.height);
+    if (!Number.isFinite(width) || width < POPUP_W_MIN) return null;
+    return {
+      width: Math.round(width),
+      height: Number.isFinite(height) && height >= POPUP_H_MIN ? Math.round(height) : null,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function savePopupSize(size) {
+  try {
+    if (!size || !Number.isFinite(size.width)) {
+      localStorage.removeItem(POPUP_SIZE_KEY);
+      state.popupPinnedSize = null;
+      return;
+    }
+    const next = {
+      width: Math.round(size.width),
+      height: Number.isFinite(size.height) ? Math.round(size.height) : null,
+    };
+    state.popupPinnedSize = next;
+    localStorage.setItem(POPUP_SIZE_KEY, JSON.stringify(next));
+  } catch {
+    state.popupPinnedSize = size || null;
+  }
+}
+
+function clearPopupSize() {
+  savePopupSize(null);
+  if (!wordPopup) return;
+  wordPopup.classList.remove('has-custom-size');
+  wordPopup.style.width = '';
+  wordPopup.style.height = '';
+}
+
+function clampPopupSize(width, height) {
+  const vw = window.innerWidth;
+  const vh = window.innerHeight;
+  const maxW = Math.max(POPUP_W_MIN, vw - 16);
+  const maxH = Math.max(POPUP_H_MIN, vh - 16);
+  const w = Math.max(POPUP_W_MIN, Math.min(Number(width) || POPUP_W_DEFAULT, maxW));
+  let h = null;
+  if (Number.isFinite(height) && height != null) {
+    h = Math.max(POPUP_H_MIN, Math.min(Number(height), maxH));
+  }
+  return { width: w, height: h };
+}
+
+function applyPopupSize(width, height) {
+  if (!wordPopup) return null;
+  const size = clampPopupSize(width, height);
+  wordPopup.style.width = `${size.width}px`;
+  if (size.height != null) {
+    wordPopup.style.height = `${size.height}px`;
+    wordPopup.classList.add('has-custom-size');
+  } else {
+    wordPopup.style.height = '';
+    wordPopup.classList.remove('has-custom-size');
+  }
+  return size;
+}
+
 function clampPopupPos(left, top, width, height) {
   const vw = window.innerWidth;
   const vh = window.innerHeight;
@@ -2455,6 +2531,15 @@ function showPopup(word, sentence, rect) {
   popupContext.textContent = sentence;
   resetPopupAsk();
   wordPopup.classList.remove('hidden');
+
+  const pinnedSize = state.popupPinnedSize;
+  if (pinnedSize) {
+    applyPopupSize(pinnedSize.width, pinnedSize.height);
+  } else {
+    wordPopup.classList.remove('has-custom-size');
+    wordPopup.style.width = '';
+    wordPopup.style.height = '';
+  }
 
   const pinned = state.popupPinnedPos;
   if (pinned) {
@@ -2517,11 +2602,93 @@ function bindPopupDrag() {
 
 bindPopupDrag();
 
+function bindPopupResize() {
+  if (!wordPopup || wordPopup.dataset.resizeBound === '1') return;
+  wordPopup.dataset.resizeBound = '1';
+  const handles = wordPopup.querySelectorAll('.popup__resize');
+  if (!handles.length) return;
+
+  handles.forEach((handle) => {
+    handle.addEventListener('pointerdown', (e) => {
+      if (e.button != null && e.button !== 0) return;
+      e.preventDefault();
+      e.stopPropagation();
+      const box = wordPopup.getBoundingClientRect();
+      state.popupResize = {
+        pointerId: e.pointerId,
+        edge: handle.dataset.edge || 'se',
+        startX: e.clientX,
+        startY: e.clientY,
+        startW: box.width,
+        startH: box.height,
+        startLeft: box.left,
+        startTop: box.top,
+      };
+      wordPopup.classList.add('is-resizing');
+      handle.setPointerCapture?.(e.pointerId);
+    });
+
+    handle.addEventListener('pointermove', (e) => {
+      const resize = state.popupResize;
+      if (!resize || resize.pointerId !== e.pointerId) return;
+      e.preventDefault();
+      const dx = e.clientX - resize.startX;
+      const dy = e.clientY - resize.startY;
+      let nextW = resize.startW;
+      let nextH = resize.startH;
+      if (resize.edge.includes('e')) nextW = resize.startW + dx;
+      if (resize.edge.includes('s')) nextH = resize.startH + dy;
+      // Для края e сохраняем текущую высоту только если уже была кастомная.
+      const keepH = resize.edge === 'e'
+        ? (state.popupPinnedSize?.height ?? null)
+        : nextH;
+      const size = applyPopupSize(nextW, keepH);
+      applyPopupPos(resize.startLeft, resize.startTop, size.width, size.height ?? nextH);
+    });
+
+    const endResize = (e) => {
+      const resize = state.popupResize;
+      if (!resize || (e.pointerId != null && resize.pointerId !== e.pointerId)) return;
+      state.popupResize = null;
+      wordPopup.classList.remove('is-resizing');
+      const box = wordPopup.getBoundingClientRect();
+      const keepAutoHeight = resize.edge === 'e' && state.popupPinnedSize?.height == null;
+      const size = applyPopupSize(box.width, keepAutoHeight ? null : box.height);
+      savePopupSize(size);
+      const pos = applyPopupPos(box.left, box.top, size.width, size.height ?? box.height);
+      if (state.popupPinnedPos) savePopupPos(pos);
+    };
+
+    handle.addEventListener('pointerup', endResize);
+    handle.addEventListener('pointercancel', endResize);
+  });
+
+  const se = wordPopup.querySelector('.popup__resize--se');
+  se?.addEventListener('dblclick', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    clearPopupSize();
+    const box = wordPopup.getBoundingClientRect();
+    applyPopupPos(box.left, box.top);
+  });
+}
+
+bindPopupResize();
+
 window.addEventListener('resize', () => {
   if (!wordPopup || wordPopup.classList.contains('hidden')) return;
+  if (state.popupPinnedSize) {
+    applyPopupSize(state.popupPinnedSize.width, state.popupPinnedSize.height);
+  }
   const box = wordPopup.getBoundingClientRect();
   const next = applyPopupPos(box.left, box.top, box.width, box.height);
   if (state.popupPinnedPos) savePopupPos(next);
+  if (state.popupPinnedSize) {
+    savePopupSize({
+      width: box.width,
+      height: state.popupPinnedSize.height != null ? box.height : null,
+    });
+  }
 });
 
 function setPopupTranslation(raw) {
