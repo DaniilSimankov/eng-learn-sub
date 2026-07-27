@@ -233,6 +233,14 @@
             </div>
             <div id="subtitle-translation" class="subtitle-translation hidden" aria-live="polite">
               <span id="subtitle-translation-text" class="subtitle-translation__text"></span>
+              <span id="subtitle-translation-provider" class="translation-provider hidden"></span>
+              <button
+                type="button"
+                id="subtitle-translation-ai"
+                class="translation-retry translation-ai hidden"
+                title="Уточнить перевод через локальный ИИ"
+                aria-label="Уточнить через ИИ"
+              >ИИ</button>
               <button
                 type="button"
                 id="subtitle-translation-retry"
@@ -251,12 +259,21 @@
           <div class="popup__word" id="popup-word"></div>
           <div class="popup__translation" id="popup-translation"></div>
           <div class="popup__translation-note hidden" id="popup-translation-note"></div>
-          <button
-            type="button"
-            id="popup-retry"
-            class="btn btn--ghost btn--sm translation-retry translation-retry--popup hidden"
-            title="Повторить перевод"
-          >↻ Повторить</button>
+          <div class="popup__translate-tools">
+            <span id="popup-provider" class="translation-provider hidden"></span>
+            <button
+              type="button"
+              id="popup-ai"
+              class="btn btn--ghost btn--sm translation-ai hidden"
+              title="Уточнить перевод через локальный ИИ с учётом контекста"
+            >ИИ · разбор</button>
+            <button
+              type="button"
+              id="popup-retry"
+              class="btn btn--ghost btn--sm translation-retry translation-retry--popup hidden"
+              title="Повторить перевод"
+            >↻ Повторить</button>
+          </div>
           <div class="popup__context" id="popup-context"></div>
           <div class="popup__actions">
             <button type="button" class="btn btn--primary btn--sm" id="popup-save">+ В словарь</button>

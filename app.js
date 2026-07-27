@@ -44,6 +44,9 @@ const state = {
   cues: [],
   currentCueIndex: -1,
   lastPopupWord: null,
+  lastPopupProvider: null,
+  lastInlineProvider: null,
+  aiReady: false,
   wordAnchorIndex: null,
   wordDrag: null,
   ignorePopupHideUntil: 0,
@@ -97,6 +100,8 @@ const subtitleDisplay = $('#subtitle-display');
 const subtitleTranslation = $('#subtitle-translation');
 const subtitleTranslationText = $('#subtitle-translation-text');
 const subtitleTranslationRetry = $('#subtitle-translation-retry');
+const subtitleTranslationAi = $('#subtitle-translation-ai');
+const subtitleTranslationProvider = $('#subtitle-translation-provider');
 const subtitleMeta = $('#subtitle-meta');
 const subtitleHint = $('#subtitle-hint');
 const speedSelect = $('#speed-select');
@@ -107,6 +112,8 @@ const popupWord = $('#popup-word');
 const popupTranslation = $('#popup-translation');
 const popupTranslationNote = $('#popup-translation-note');
 const popupRetry = $('#popup-retry');
+const popupAi = $('#popup-ai');
+const popupProvider = $('#popup-provider');
 const popupContext = $('#popup-context');
 const vocabDrawer = $('#vocab-drawer');
 const vocabList = $('#vocab-list');
@@ -309,6 +316,7 @@ async function refreshAiStatus() {
     const res = await fetch('/api/ai-status');
     const data = await res.json();
     aiStatusEl.classList.remove('is-ok', 'is-warn', 'is-err');
+    state.aiReady = Boolean(data.ok && data.ready);
     if (!data.ok) {
       aiStatusEl.textContent = 'Ollama выкл';
       aiStatusEl.classList.add('is-err');
@@ -327,6 +335,7 @@ async function refreshAiStatus() {
       ? `Модель ${data.model} · агенты: ${(data.agents || []).join(', ')}`
       : `Локальная модель готова: ${data.model}`;
   } catch {
+    state.aiReady = false;
     aiStatusEl.textContent = 'нет связи';
     aiStatusEl.classList.remove('is-ok', 'is-warn');
     aiStatusEl.classList.add('is-err');
@@ -717,9 +726,17 @@ popupRetry?.addEventListener('click', (e) => {
   e.stopPropagation();
   retryPopupTranslation();
 });
+popupAi?.addEventListener('click', (e) => {
+  e.stopPropagation();
+  refinePopupWithAi();
+});
 subtitleTranslationRetry?.addEventListener('click', (e) => {
   e.stopPropagation();
   retryInlineTranslation();
+});
+subtitleTranslationAi?.addEventListener('click', (e) => {
+  e.stopPropagation();
+  refineInlineWithAi();
 });
 document.addEventListener('click', (e) => {
   if (Date.now() < state.ignorePopupHideUntil) return;
@@ -1816,7 +1833,7 @@ function scheduleInlineTranslation(text, cueIndex) {
   }
   const focus = String(text || '').trim();
   const expanded = buildExpandedCueContext(cueIndex, focus);
-  const cachedKey = `en-ru:v7:${focus.toLowerCase()}|${expanded.toLowerCase()}`;
+  const cachedKey = `en-ru:v8:google:${focus.toLowerCase()}|${expanded.toLowerCase()}`;
 
   // Во время playback Ollama (qwen3:4b) съедает CPU → видео тормозит, звук идёт.
   // Пока играет — только кэш; инференс на паузе.
@@ -1862,19 +1879,49 @@ function refreshInlineTranslationOnPause() {
   scheduleInlineTranslation(cue.text, state.currentCueIndex);
 }
 
+function providerLabel(provider) {
+  if (provider === 'google') return 'Google';
+  if (provider === 'ollama') return 'ИИ';
+  return '';
+}
+
+function setProviderBadge(el, provider) {
+  if (!el) return;
+  const label = providerLabel(provider);
+  if (!label) {
+    el.textContent = '';
+    el.classList.add('hidden');
+    return;
+  }
+  el.textContent = label;
+  el.classList.remove('hidden');
+}
+
 function setInlineTranslation(result) {
   const failed = isTranslationFailure(result);
   const text = failed
     ? friendlyTranslationError(result.message)
-    : String(result ?? '');
+    : translationText(result);
+  const provider = failed ? '' : translationProvider(result);
+  state.lastInlineProvider = provider || null;
   if (subtitleTranslationText) {
     subtitleTranslationText.textContent = text;
   } else {
     subtitleTranslation.textContent = text;
   }
   subtitleTranslation.classList.toggle('is-error', failed);
+  setProviderBadge(subtitleTranslationProvider, provider);
   if (subtitleTranslationRetry) {
     subtitleTranslationRetry.classList.toggle('hidden', !failed);
+  }
+  if (subtitleTranslationAi) {
+    const showAi = !failed && provider === 'google' && Boolean(text) && text !== '…';
+    subtitleTranslationAi.classList.toggle('hidden', !showAi);
+    subtitleTranslationAi.disabled = false;
+    subtitleTranslationAi.textContent = 'ИИ';
+    subtitleTranslationAi.title = state.aiReady
+      ? 'Уточнить перевод через локальный ИИ'
+      : 'ИИ уточнит перевод (Ollama должна быть запущена)';
   }
 }
 
@@ -1884,12 +1931,28 @@ async function retryInlineTranslation() {
   if (!cue?.text) return;
   const focus = cue.text.trim();
   const expanded = buildExpandedCueContext(state.currentCueIndex, focus);
-  const key = `en-ru:v7:${focus.toLowerCase()}|${expanded.toLowerCase()}`;
-  state.translationCache.delete(key);
-  state.translationInflight.delete(key);
+  for (const engine of ['google', 'ai']) {
+    const key = `en-ru:v8:${engine}:${focus.toLowerCase()}|${expanded.toLowerCase()}`;
+    state.translationCache.delete(key);
+    state.translationInflight.delete(key);
+  }
   setInlineTranslation('…');
   subtitleTranslation.classList.remove('hidden');
-  const ru = await translateText(focus, state.currentCueIndex);
+  const ru = await translateText(focus, state.currentCueIndex, { engine: 'google' });
+  if (state.currentCueIndex >= 0 && state.cues[state.currentCueIndex]?.text === cue.text) {
+    setInlineTranslation(ru);
+  }
+}
+
+async function refineInlineWithAi() {
+  if (!showRuInline.checked || state.currentCueIndex < 0) return;
+  const cue = state.cues[state.currentCueIndex];
+  if (!cue?.text) return;
+  if (subtitleTranslationAi) {
+    subtitleTranslationAi.disabled = true;
+    subtitleTranslationAi.textContent = 'ИИ…';
+  }
+  const ru = await translateText(cue.text, state.currentCueIndex, { engine: 'ai' });
   if (state.currentCueIndex >= 0 && state.cues[state.currentCueIndex]?.text === cue.text) {
     setInlineTranslation(ru);
   }
@@ -2074,6 +2137,9 @@ function showPopup(word, sentence, rect) {
   popupTranslation.classList.add('loading');
   popupTranslation.classList.remove('is-error');
   popupRetry?.classList.add('hidden');
+  popupAi?.classList.add('hidden');
+  setProviderBadge(popupProvider, '');
+  state.lastPopupProvider = null;
   if (popupTranslationNote) {
     popupTranslationNote.textContent = '';
     popupTranslationNote.classList.add('hidden');
@@ -2098,6 +2164,9 @@ function setPopupTranslation(raw) {
     popupTranslation.classList.remove('loading');
     popupTranslation.classList.add('is-error');
     popupRetry?.classList.remove('hidden');
+    popupAi?.classList.add('hidden');
+    setProviderBadge(popupProvider, '');
+    state.lastPopupProvider = null;
     if (popupTranslationNote) {
       popupTranslationNote.textContent = '';
       popupTranslationNote.classList.add('hidden');
@@ -2105,10 +2174,23 @@ function setPopupTranslation(raw) {
     return;
   }
 
-  const { main, note } = splitTranslationNote(raw);
-  popupTranslation.textContent = main || raw;
+  const text = translationText(raw);
+  const provider = translationProvider(raw);
+  const { main, note } = splitTranslationNote(text);
+  popupTranslation.textContent = main || text;
   popupTranslation.classList.remove('loading', 'is-error');
   popupRetry?.classList.add('hidden');
+  state.lastPopupProvider = provider || null;
+  setProviderBadge(popupProvider, provider);
+  if (popupAi) {
+    const showAi = provider === 'google' && Boolean(main || text);
+    popupAi.classList.toggle('hidden', !showAi);
+    popupAi.disabled = false;
+    popupAi.textContent = 'ИИ · разбор';
+    popupAi.title = state.aiReady
+      ? 'Уточнить перевод через локальный ИИ с учётом контекста'
+      : 'ИИ уточнит перевод (Ollama должна быть запущена)';
+  }
   if (popupTranslationNote) {
     if (note) {
       popupTranslationNote.textContent = note;
@@ -2124,14 +2206,33 @@ async function retryPopupTranslation() {
   const current = state.lastPopupWord;
   if (!current?.word) return;
   const { word, sentence } = current;
-  const key = `word:v10:${word.replace(/^['"]|['"]$/g, '').toLowerCase()}:${sentence || ''}`;
-  state.translationCache.delete(key);
-  state.translationInflight.delete(key);
+  const clean = word.replace(/^['"]|['"]$/g, '');
+  for (const engine of ['google', 'ai']) {
+    const key = `word:v11:${engine}:${clean.toLowerCase()}:${sentence || ''}`;
+    state.translationCache.delete(key);
+    state.translationInflight.delete(key);
+  }
   popupTranslation.textContent = 'Перевод…';
   popupTranslation.classList.add('loading');
   popupTranslation.classList.remove('is-error');
   popupRetry?.classList.add('hidden');
-  const translation = await translateWord(word, sentence);
+  popupAi?.classList.add('hidden');
+  const translation = await translateWord(word, sentence, { engine: 'google' });
+  if (state.lastPopupWord?.word === word) {
+    setPopupTranslation(translation);
+  }
+}
+
+async function refinePopupWithAi() {
+  const current = state.lastPopupWord;
+  if (!current?.word) return;
+  const { word, sentence } = current;
+  if (popupAi) {
+    popupAi.disabled = true;
+    popupAi.textContent = 'ИИ…';
+  }
+  popupTranslation.classList.add('loading');
+  const translation = await translateWord(word, sentence, { engine: 'ai' });
   if (state.lastPopupWord?.word === word) {
     setPopupTranslation(translation);
   }
@@ -2183,9 +2284,9 @@ function buildTranslationContext(phrase, sentence) {
     .trim()
     .split(/\s+/)
     .filter(Boolean);
-  // Одно слово — только текущая реплика (соседи раньше путали модель).
-  // Фраза (2+) — подтянуть продолжения с соседних cue.
-  if (words.length >= 2) {
+  // Одно слово / короткое выделение внутри реплики — только текущий cue.
+  // Длинная фраза (5+): можно подтянуть соседние cue при обрыве мысли.
+  if (words.length >= 5) {
     return buildExpandedCueContext(idx, current) || current || phrase || '';
   }
   return current || phrase || '';
@@ -2194,7 +2295,10 @@ function buildTranslationContext(phrase, sentence) {
 function hidePopup() {
   wordPopup.classList.add('hidden');
   popupRetry?.classList.add('hidden');
+  popupAi?.classList.add('hidden');
   popupTranslation.classList.remove('is-error');
+  setProviderBadge(popupProvider, '');
+  state.lastPopupProvider = null;
   if (popupTranslationNote) {
     popupTranslationNote.textContent = '';
     popupTranslationNote.classList.add('hidden');
@@ -2208,11 +2312,12 @@ function replayCurrentLine() {
   video.play();
 }
 
-async function fetchTranslation(text, { word = null, sentence = null } = {}) {
+async function fetchTranslation(text, { word = null, sentence = null, engine = 'google' } = {}) {
   const params = new URLSearchParams();
   if (text) params.set('text', text);
   if (word) params.set('word', word);
   if (sentence) params.set('sentence', sentence);
+  params.set('engine', engine);
   let res;
   try {
     res = await fetch(`/api/translate?${params.toString()}`);
@@ -2230,7 +2335,11 @@ async function fetchTranslation(text, { word = null, sentence = null } = {}) {
     throw new Error(res.ok ? 'Пустой ответ сервера' : `Ошибка сервера (${res.status})`);
   }
   if (!res.ok) throw new Error(data.error || 'Ошибка перевода');
-  return data.translation;
+  return {
+    text: data.translation,
+    provider: data.provider || engine,
+    canRefine: Boolean(data.canRefine),
+  };
 }
 
 function translationFailure(message) {
@@ -2239,6 +2348,17 @@ function translationFailure(message) {
 
 function isTranslationFailure(result) {
   return Boolean(result && typeof result === 'object' && result.error === true);
+}
+
+function translationText(result) {
+  if (isTranslationFailure(result)) return friendlyTranslationError(result.message);
+  if (result && typeof result === 'object' && 'text' in result) return String(result.text ?? '');
+  return String(result ?? '');
+}
+
+function translationProvider(result) {
+  if (!result || typeof result !== 'object' || result.error) return '';
+  return String(result.provider || '');
 }
 
 function friendlyTranslationError(message) {
@@ -2253,24 +2373,24 @@ function friendlyTranslationError(message) {
   return raw;
 }
 
-async function translateText(text, cueIndex = state.currentCueIndex) {
+async function translateText(text, cueIndex = state.currentCueIndex, { engine = 'google' } = {}) {
   if (!state.onlineTranslation) {
-    return 'AI-перевод выключен — включите в настройках выше';
+    return { text: 'AI-перевод выключен — включите в настройках выше', provider: '' };
   }
   const focus = String(text || '').trim();
   const expanded = buildExpandedCueContext(cueIndex, focus);
-  const key = `en-ru:v7:${focus.toLowerCase()}|${expanded.toLowerCase()}`;
+  const key = `en-ru:v8:${engine}:${focus.toLowerCase()}|${expanded.toLowerCase()}`;
   if (state.translationCache.has(key)) return state.translationCache.get(key);
   if (state.translationInflight.has(key)) return state.translationInflight.get(key);
 
   const pending = (async () => {
     try {
       let result;
-      if (expanded && expanded !== focus) {
-        // Соседний контекст: переводим только текущую реплику внутри склейки.
-        result = await fetchTranslation(focus, { word: focus, sentence: expanded });
+      if (expanded && expanded !== focus && engine !== 'google') {
+        // ИИ + соседний контекст: переводим только текущую реплику внутри склейки.
+        result = await fetchTranslation(focus, { word: focus, sentence: expanded, engine });
       } else {
-        result = await fetchTranslation(focus);
+        result = await fetchTranslation(focus, { engine });
       }
       state.translationCache.set(key, result);
       return result;
@@ -2285,19 +2405,23 @@ async function translateText(text, cueIndex = state.currentCueIndex) {
   return pending;
 }
 
-async function translateWord(word, sentence = '') {
+async function translateWord(word, sentence = '', { engine = 'google' } = {}) {
   const clean = word.replace(/^['"]|['"]$/g, '');
   if (!state.onlineTranslation) {
-    return clean;
+    return { text: clean, provider: '' };
   }
   const ctx = sentence || state.lastPopupWord?.sentence || '';
-  const key = `word:v10:${clean.toLowerCase()}:${ctx}`;
+  const key = `word:v11:${engine}:${clean.toLowerCase()}:${ctx}`;
   if (state.translationCache.has(key)) return state.translationCache.get(key);
   if (state.translationInflight.has(key)) return state.translationInflight.get(key);
 
   const pending = (async () => {
     try {
-      const result = await fetchTranslation(clean, { word: clean, sentence: ctx });
+      const result = await fetchTranslation(clean, {
+        word: clean,
+        sentence: engine === 'ai' ? ctx : '',
+        engine,
+      });
       state.translationCache.set(key, result);
       return result;
     } catch (err) {

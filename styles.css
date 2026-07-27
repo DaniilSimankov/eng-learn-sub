@@ -798,7 +798,36 @@ body {
 }
 
 .translation-retry--popup {
+  margin: 0;
+}
+
+.popup__translate-tools {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem;
   margin: 0 0 0.55rem;
+}
+
+.translation-provider {
+  font-size: 0.7rem;
+  color: var(--text-muted);
+  opacity: 0.9;
+  letter-spacing: 0.02em;
+}
+
+.translation-ai {
+  border-color: rgba(108, 140, 255, 0.45);
+  color: #c5d0ff;
+}
+
+.translation-ai:hover:not(:disabled) {
+  background: rgba(108, 140, 255, 0.18);
+}
+
+.translation-ai:disabled {
+  opacity: 0.55;
+  cursor: wait;
 }
 
 .control--subs-size {

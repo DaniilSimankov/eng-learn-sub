@@ -741,6 +741,14 @@ try:
     OLLAMA_NUM_THREAD = max(1, int(os.environ.get("SUBLEARN_OLLAMA_NUM_THREAD", "2")))
 except ValueError:
     OLLAMA_NUM_THREAD = 2
+# google = быстрый путь; ai/ollama = локальная модель по кнопке «ИИ».
+TRANSLATE_DEFAULT_ENGINE = os.environ.get("SUBLEARN_TRANSLATE_ENGINE", "google").strip().lower()
+GOOGLE_TRANSLATE_ENABLED = os.environ.get("SUBLEARN_GOOGLE_TRANSLATE", "1").strip() not in (
+    "0",
+    "false",
+    "no",
+    "off",
+)
 
 
 def init_vocab_db() -> None:
@@ -1189,6 +1197,7 @@ def _colloquial_system_prompt(*, span: bool = False) -> str:
         "Частые ловушки-кальки: "
         "the point / what's the point → суть/смысл (НЕ «точка»); "
         "things have been/are → всё стало/идёт (НЕ «вещи»); "
+        "stack (cash/money) → копить/откладывать (НЕ «стекать/штабелировать»); "
         "I mean → в смысле / ну; "
         "like (filler) → типа / как бы; "
         "ain't → разговорное отрицание. "
@@ -1208,6 +1217,8 @@ def _line_translate_messages(cleaned: str) -> list:
         # Few-shot: разные паттерны, не «заучивание» одной фразы.
         {"role": "user", "content": "I mean ain't that the point"},
         {"role": "assistant", "content": '{"ru":"в смысле, разве не в этом суть?"}'},
+        {"role": "user", "content": "stack my cash"},
+        {"role": "assistant", "content": '{"ru":"копить кэш"}'},
         {"role": "user", "content": "things have been like really good"},
         {"role": "assistant", "content": '{"ru":"всё стало типа реально хорошо"}'},
         {"role": "user", "content": "what's the point of all this"},
@@ -1318,6 +1329,10 @@ def _is_bad_phrase_translation(source: str, translation: str) -> bool:
     if re.search(r"\b(the point|what's the point|whats the point)\b", src):
         if re.search(r"\bточк", ru) and not re.search(r"\b(суть|смысл|дело)\b", ru):
             return True
+    # slang stack cash/money → не «стекать/штабель»
+    if re.search(r"\bstack\b.+\b(cash|money|dough|bread)\b", src):
+        if re.search(r"стек|штабел|складывать стопк", ru):
+            return True
     return False
 
 
@@ -1425,6 +1440,32 @@ def _has_broader_context(target: str, sentence: Optional[str]) -> bool:
     return tgt.lower() in sent.lower() or _normalize_phrase_key(tgt) in _normalize_phrase_key(sent)
 
 
+def _is_cue_join_span(target: str, sentence: str) -> bool:
+    """Span только для склейки соседних cue (фраза в начале/конце), не для выделения из середины."""
+    sent = _normalize_phrase_key(sentence)
+    tgt = _normalize_phrase_key(target)
+    if not sent or not tgt or sent == tgt:
+        return False
+    if tgt not in sent:
+        return False
+    # «prev… [[cue]]» или «[[cue]] next…»
+    return sent.startswith(tgt + " ") or sent.endswith(" " + tgt)
+
+
+def _looks_like_context_bleed(target: str, context: str, translation: str) -> bool:
+    """Перевод заметно ближе по длине к CONTEXT, чем к TARGET."""
+    tgt_n = _source_token_count(target)
+    ctx_n = _source_token_count(context)
+    ru_n = len(re.findall(r"[A-Za-zА-Яа-яЁё]+", translation or ""))
+    if tgt_n <= 0 or ru_n <= 0 or ctx_n <= tgt_n + 1:
+        return False
+    if tgt_n <= 5 and ru_n >= tgt_n * 2 + 1:
+        return True
+    if ru_n >= tgt_n + 3 and ru_n >= int(0.55 * ctx_n):
+        return True
+    return False
+
+
 def _phrase_num_predict(source: str) -> int:
     # Жёсткий потолок: меньше токенов → меньше места для отсебятины.
     n = _source_token_count(source)
@@ -1442,13 +1483,17 @@ def ollama_translate(text: str, *, word: Optional[str] = None, sentence: Optiona
     sentence = _normalize_english_spacing(sentence) if sentence else sentence
 
     # Фраза (2+ слова) с соседним cue-контекстом — переводим [[фрагмент]], не всю склейку.
+    # Выделение из середины одной реплики («stack my cash») — без span, иначе модель
+    # переводит всю строку.
     word_words = len(_normalize_phrase_key(word_raw or "").split()) if word_raw else 0
     span_mode = bool(
         word_raw
         and word_words >= 2
+        and sentence
         and _has_broader_context(word_raw, sentence)
+        and _is_cue_join_span(word_raw, sentence)
     )
-    if word_raw and _is_long_phrase(word_raw) and not span_mode:
+    if word_raw and word_words >= 2 and not span_mode:
         cleaned = word_raw
         word_raw = None
 
@@ -1476,8 +1521,11 @@ def ollama_translate(text: str, *, word: Optional[str] = None, sentence: Optiona
             temperature=0,
             num_ctx=1024,
         )
-        # Контекст иногда ломает идиомы («things» → «вещи») — переводим TARGET без соседей.
-        if _is_bad_phrase_translation(target, result):
+        # Контекст иногда ломает идиомы или «прилипает» целиком — только TARGET.
+        if (
+            _is_bad_phrase_translation(target, result)
+            or _looks_like_context_bleed(target, ctx, result)
+        ):
             result = _chat_translate(
                 _line_translate_messages(target),
                 agent="phrase",
@@ -1551,6 +1599,84 @@ def ollama_translate(text: str, *, word: Optional[str] = None, sentence: Optiona
 
     _translate_cache_put(cache_key, result)
     return result
+
+
+def google_translate(text: str) -> str:
+    """Быстрый EN→RU через публичный endpoint Google Translate (client=gtx)."""
+    cleaned = _normalize_english_spacing(text or "")
+    if not cleaned:
+        return ""
+    if len(cleaned) > 800:
+        raise ValueError("Слишком длинный текст (макс. 800 символов)")
+
+    # Точные глоссы (мат и т.п.) — надёжнее Google.
+    gloss = _glossary_lookup(cleaned)
+    if gloss:
+        return gloss
+
+    cache_key = f"gtx:{cleaned.lower()}"
+    cached = _translate_cache_get(cache_key)
+    if cached is not None:
+        return cached
+
+    url = (
+        "https://translate.googleapis.com/translate_a/single"
+        f"?client=gtx&sl=en&tl=ru&dt=t&q={quote(cleaned)}"
+    )
+    req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+    try:
+        with urllib.request.urlopen(req, timeout=8, context=_SSL_CONTEXT) as resp:
+            raw = resp.read().decode("utf-8", errors="replace")
+    except urllib.error.HTTPError as exc:
+        body = exc.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"Google Translate HTTP {exc.code}: {body[:160]}") from exc
+
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError("Некорректный ответ Google Translate") from exc
+
+    parts = []
+    rows = data[0] if isinstance(data, list) and data else None
+    if isinstance(rows, list):
+        for row in rows:
+            if isinstance(row, list) and row and isinstance(row[0], str) and row[0]:
+                parts.append(row[0])
+    result = "".join(parts).strip()
+    if not result:
+        raise RuntimeError("Пустой ответ Google Translate")
+    result = _clean_translation(result)
+    _translate_cache_put(cache_key, result)
+    return result
+
+
+def translate_text(
+    text: str,
+    *,
+    word: Optional[str] = None,
+    sentence: Optional[str] = None,
+    engine: str = "google",
+) -> Tuple[str, str, str]:
+    """
+    Возвращает (translation, provider, model).
+    engine: google | ai/ollama
+    """
+    mode = (engine or TRANSLATE_DEFAULT_ENGINE or "google").strip().lower()
+    if mode in ("ai", "ollama", "llm", "local"):
+        return ollama_translate(text, word=word, sentence=sentence), "ollama", OLLAMA_MODEL
+
+    # Google: переводим выделенное (word) или всю реплику (text), без «прилипания» контекста.
+    focus = _normalize_english_spacing(word or text or "")
+    if not focus:
+        focus = _normalize_english_spacing(text or "")
+    if not GOOGLE_TRANSLATE_ENABLED:
+        return ollama_translate(text, word=word, sentence=sentence), "ollama", OLLAMA_MODEL
+
+    try:
+        return google_translate(focus), "google", "gtx"
+    except Exception:
+        # Сеть/лимиты Google — мягкий откат на локальную модель.
+        return ollama_translate(text, word=word, sentence=sentence), "ollama", OLLAMA_MODEL
 
 
 def _mark_phrase_in_context(context: str, phrase: str) -> str:
@@ -1729,19 +1855,27 @@ class SubLearnHandler(SimpleHTTPRequestHandler):
             text = (params.get("text") or [""])[0].strip()
             word = (params.get("word") or [""])[0].strip() or None
             sentence = (params.get("sentence") or [""])[0].strip() or None
+            engine = (params.get("engine") or [TRANSLATE_DEFAULT_ENGINE])[0].strip().lower()
             if not text and not word:
                 self._json_response(400, {"error": "Параметр text или word обязателен"})
                 return
             try:
-                translation = ollama_translate(text or word or "", word=word, sentence=sentence)
+                translation, provider, model = translate_text(
+                    text or word or "",
+                    word=word,
+                    sentence=sentence,
+                    engine=engine,
+                )
                 used_word = bool(word) and not _is_long_phrase(word)
                 self._json_response(
                     200,
                     {
                         "translation": translation,
-                        "provider": "ollama",
-                        "model": OLLAMA_MODEL,
-                        "agent": "word" if used_word else "phrase",
+                        "provider": provider,
+                        "model": model,
+                        "engine": engine if engine in ("google", "ai", "ollama", "llm", "local") else "google",
+                        "agent": "word" if used_word and provider == "ollama" else "phrase",
+                        "canRefine": provider == "google",
                     },
                 )
             except ValueError as exc:
@@ -1751,8 +1885,8 @@ class SubLearnHandler(SimpleHTTPRequestHandler):
                     502,
                     {
                         "error": (
-                            f"Ollama недоступна: {exc.reason}. "
-                            "Запустите ./start.sh (Docker)"
+                            f"Сервис перевода недоступен: {exc.reason}. "
+                            "Проверьте сеть или Ollama (./start.sh)"
                         )
                     },
                 )
@@ -1856,7 +1990,11 @@ def main():
     init_vocab_db()
     server = ThreadingHTTPServer((host, port), SubLearnHandler)
     print(f"SubLearn: http://127.0.0.1:{port}")
-    print(f"AI: Ollama {OLLAMA_URL} model={OLLAMA_MODEL} agents=word,phrase")
+    print(
+        f"Translate: default={TRANSLATE_DEFAULT_ENGINE} "
+        f"google={'on' if GOOGLE_TRANSLATE_ENABLED else 'off'} "
+        f"| AI Ollama {OLLAMA_URL} model={OLLAMA_MODEL}"
+    )
     print(f"Vocab DB: {DB_PATH}")
     print("Остановка: Ctrl+C")
     server.serve_forever()
