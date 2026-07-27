@@ -1019,6 +1019,11 @@ PHRASE_GLOSSARY = {
     "are you fucking kidding me": "ты ёбанутый?",
     "no fucking way": "нихуя себе",
     "oh my fucking god": "ёбаный в рот",
+    # Разговорное things have been… — не «вещи были…»
+    "things have been like really good": "всё стало типа реально хорошо",
+    "things have been really good": "всё стало реально хорошо",
+    "things have been so good": "всё стало так хорошо",
+    "things are looking up": "дела идут на лад",
 }
 
 # Односложные слова, которые 3B ломает рядом с матом / частые клики без LLM.
@@ -1172,39 +1177,63 @@ def _translate_cache_put(key: str, value: str) -> None:
 
 def _line_translate_messages(cleaned: str) -> list:
     system = (
-        "Переведи реплику субтитров на естественный разговорный русский. "
-        "Не калькируй. Имена (Rue и т.п.) оставляй латиницей. Мат без цензуры. "
+        "Ты переводчик субтитров EN→RU. "
+        "Переведи ТОЛЬКО данную реплику. "
+        "Запрещено: дописывать продолжение, объяснения, «что даже…», "
+        "переводить соседний текст, которого нет во входе. "
+        "Сохраняй объём roughly как в оригинале. Имена латиницей. Мат прямо. "
         'Ответ строго JSON: {"ru":"перевод"}.'
     )
     return [
         {"role": "system", "content": system},
         {
             "role": "user",
-            "content": "I'm thinking to myself like look like somebody Rue would get along with",
+            "content": "things have been like really good",
         },
         {
             "role": "assistant",
-            "content": '{"ru":"Я сам себе думаю: похоже на кого-то, с кем бы Rue поладила"}',
+            "content": '{"ru":"всё стало типа реально хорошо"}',
+        },
+        {
+            "role": "user",
+            "content": "I mean ever since I gave my life over to my lord and savior Jesus Christ",
+        },
+        {
+            "role": "assistant",
+            "content": '{"ru":"в смысле, с тех пор как я отдал жизнь Господу и Спасителю Иисусу Христу"}',
         },
         {"role": "user", "content": cleaned},
     ]
 
 
 def _span_translate_messages(marked: str, target: str) -> list:
-    """Перевод куска/реплики с соседним контекстом субтитров (продолжение фразы)."""
+    """Перевод куска с соседним контекстом: контекст отдельно, чтобы не «прилипал»."""
+    m = re.search(r"\[\[(.*?)\]\]", marked or "", re.DOTALL)
+    frag = (m.group(1) if m else target).strip()
+    before = ""
+    after = ""
+    if m:
+        before = (marked[: m.start()] or "").strip()
+        after = (marked[m.end() :] or "").strip()
+    context_bits = " ".join(p for p in (before, after) if p).strip()
+
     system = (
-        "Переведи на естественный разговорный русский ТОЛЬКО фрагмент между [[ и ]]. "
-        "Текст вне скобок — контекст соседних реплик, его не переводи. "
-        "Учитывай продолжение мысли (ever since… → things have been…). "
-        'Ответ строго JSON: {"ru":"перевод фрагмента"}.'
+        "Ты переводчик субтитров EN→RU. "
+        "Переведи ТОЛЬКО поле TARGET. "
+        "CONTEXT — соседние реплики: учти смысл (времена, подлежащее), "
+        "но НЕ переводи CONTEXT и НЕ вплетай его слова в ответ. "
+        "Разговорное things have been/are = «всё стало/идёт», НЕ «вещи были». "
+        "Запрещена отсебятина и дописывания («что даже не могу описать» и т.п.). "
+        "Ответ по длине близок к TARGET. "
+        'Строго JSON: {"ru":"перевод только TARGET"}.'
     )
     return [
         {"role": "system", "content": system},
         {
             "role": "user",
             "content": (
-                "I mean ever since I gave my life over to my lord and savior Jesus Christ "
-                "[[things have been like really good]]"
+                "CONTEXT: I mean ever since I gave my life over to my lord and savior Jesus Christ\n"
+                "TARGET: things have been like really good"
             ),
         },
         {
@@ -1213,14 +1242,28 @@ def _span_translate_messages(marked: str, target: str) -> list:
         },
         {
             "role": "user",
-            "content": marked,
+            "content": (
+                "CONTEXT: things have been like really good\n"
+                "TARGET: I mean ever since I gave my life over to my lord and savior Jesus Christ"
+            ),
+        },
+        {
+            "role": "assistant",
+            "content": '{"ru":"в смысле, с тех пор как я отдал жизнь Господу и Спасителю Иисусу Христу"}',
+        },
+        {
+            "role": "user",
+            "content": (
+                f"CONTEXT: {context_bits or '(нет)'}\n"
+                f"TARGET: {frag}"
+            ),
         },
     ]
 
 
 def _word_translate_messages(marked: str, target: str) -> list:
     system = (
-        "Словарь EN→RU. Переведи только [[...]]. Короткая глосса. "
+        "Словарь EN→RU. Переведи только [[...]]. Короткая глосса, без пояснений. "
         'Ответ строго JSON: {"ru":"перевод"}.'
     )
     return [
@@ -1234,6 +1277,61 @@ def _word_translate_messages(marked: str, target: str) -> list:
             "role": "user",
             "content": marked if marked.strip().startswith("[[") else f"[[{target}]]",
         },
+    ]
+
+
+def _source_token_count(text: str) -> int:
+    return len([w for w in _normalize_phrase_key(text).split() if w])
+
+
+def _looks_like_elaboration(source: str, translation: str) -> bool:
+    """Грубая эвристика: перевод сильно длиннее оригинала или типичная отсебятина."""
+    src_n = _source_token_count(source)
+    if src_n <= 0:
+        return False
+    # Считаем «слова» кириллицы/латиницы в переводе
+    ru_words = re.findall(r"[A-Za-zА-Яа-яЁё]+", translation or "")
+    ru_n = len(ru_words)
+    if ru_n >= max(8, int(src_n * 1.85) + 2):
+        return True
+    # Типичные дописки модели
+    if re.search(
+        r"(?i)(даже не могу|не могу описать|и так далее|и т\.?\s*д\.?|"
+        r"продолжает|в общем|короче говоря|настолько .+ что)",
+        translation or "",
+    ):
+        return True
+    if translation.strip().endswith(("...", "…")) and "..." not in source and "…" not in source:
+        return True
+    return False
+
+
+def _is_bad_phrase_translation(source: str, translation: str) -> bool:
+    """Ловит буквальщину и отсебятину во фразах субтитров."""
+    if not (translation or "").strip():
+        return True
+    if _looks_like_elaboration(source, translation):
+        return True
+    src = _normalize_phrase_key(source)
+    ru = (translation or "").lower()
+    # Colloquial "things have been/are…" → не «вещи …»
+    if re.search(r"^things\b.+\b(have been|has been|are|were|got|getting)\b", src):
+        if re.search(r"\bвещ", ru):
+            return True
+    return False
+
+
+def _strict_retry_messages(target: str) -> list:
+    return [
+        {
+            "role": "system",
+            "content": (
+                "Translate EN→RU literally by meaning. "
+                "No extra words. No finishing the sentence. No commentary. "
+                'JSON only: {"ru":"..."}.'
+            ),
+        },
+        {"role": "user", "content": target},
     ]
 
 
@@ -1324,6 +1422,12 @@ def _has_broader_context(target: str, sentence: Optional[str]) -> bool:
     return tgt.lower() in sent.lower() or _normalize_phrase_key(tgt) in _normalize_phrase_key(sent)
 
 
+def _phrase_num_predict(source: str) -> int:
+    # Жёсткий потолок: меньше токенов → меньше места для отсебятины.
+    n = _source_token_count(source)
+    return min(72, max(28, 8 + n * 4))
+
+
 def ollama_translate(text: str, *, word: Optional[str] = None, sentence: Optional[str] = None) -> str:
     cleaned = _normalize_english_spacing(text or "")
     if not cleaned:
@@ -1350,6 +1454,8 @@ def ollama_translate(text: str, *, word: Optional[str] = None, sentence: Optiona
     if cached is not None:
         return cached
 
+    source_for_check = word_raw or cleaned
+
     if span_mode:
         target = word_raw.strip()
         ctx = (sentence or "").strip()
@@ -1363,10 +1469,19 @@ def ollama_translate(text: str, *, word: Optional[str] = None, sentence: Optiona
         result = _chat_translate(
             _span_translate_messages(marked, target),
             agent="phrase",
-            num_predict=min(140, max(64, 16 + len(target.split()) * 6)),
-            temperature=0.1,
+            num_predict=_phrase_num_predict(target),
+            temperature=0,
             num_ctx=1024,
         )
+        # Контекст иногда ломает идиомы («things» → «вещи») — переводим TARGET без соседей.
+        if _is_bad_phrase_translation(target, result):
+            result = _chat_translate(
+                _line_translate_messages(target),
+                agent="phrase",
+                num_predict=_phrase_num_predict(target),
+                temperature=0,
+                num_ctx=1024,
+            )
     elif word_raw:
         target = word_raw.strip()
         ctx = (sentence or "").strip()
@@ -1390,15 +1505,8 @@ def ollama_translate(text: str, *, word: Optional[str] = None, sentence: Optiona
             if gloss:
                 _translate_cache_put(cache_key, gloss)
                 return gloss
-            # Быстрый повтор на 3B без few-shot — не гоняем тяжёлый 7B на одно слово.
             retry = _chat_translate(
-                [
-                    {
-                        "role": "system",
-                        "content": "EN→RU dictionary gloss. Cyrillic only. One short answer.",
-                    },
-                    {"role": "user", "content": target},
-                ],
+                _strict_retry_messages(target),
                 agent="word",
                 num_predict=20,
                 temperature=0,
@@ -1408,12 +1516,11 @@ def ollama_translate(text: str, *, word: Optional[str] = None, sentence: Optiona
             if not _is_bad_word_translation(retry, word_raw):
                 result = retry
             else:
-                # Совсем крайний случай — короткая фраза на line-модели.
                 result = _chat_translate(
                     _line_translate_messages(word_raw),
                     agent="phrase",
-                    num_predict=min(80, max(32, 12 + len(word_raw.split()) * 5)),
-                    temperature=0.1,
+                    num_predict=_phrase_num_predict(word_raw),
+                    temperature=0,
                     num_ctx=1024,
                 )
     else:
@@ -1425,9 +1532,18 @@ def ollama_translate(text: str, *, word: Optional[str] = None, sentence: Optiona
         result = _chat_translate(
             _line_translate_messages(cleaned),
             agent="phrase",
-            num_predict=min(140, max(64, 16 + len(cleaned.split()) * 6)),
-            temperature=0.1,
+            num_predict=_phrase_num_predict(cleaned),
+            temperature=0,
             num_ctx=1024,
+        )
+
+    if _is_bad_phrase_translation(source_for_check, result):
+        result = _chat_translate(
+            _strict_retry_messages(source_for_check),
+            agent="phrase",
+            num_predict=_phrase_num_predict(source_for_check),
+            temperature=0,
+            num_ctx=512,
         )
 
     _translate_cache_put(cache_key, result)

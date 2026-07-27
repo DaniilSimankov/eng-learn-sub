@@ -1805,7 +1805,7 @@ function scheduleInlineTranslation(text, cueIndex) {
   }
   const focus = String(text || '').trim();
   const expanded = buildExpandedCueContext(cueIndex, focus);
-  const cachedKey = `en-ru:v4:${focus.toLowerCase()}|${expanded.toLowerCase()}`;
+  const cachedKey = `en-ru:v5:${focus.toLowerCase()}|${expanded.toLowerCase()}`;
 
   // Во время playback Ollama (qwen3:4b) съедает CPU → видео тормозит, звук идёт.
   // Пока играет — только кэш; инференс на паузе.
@@ -2147,7 +2147,7 @@ async function translateText(text, cueIndex = state.currentCueIndex) {
   }
   const focus = String(text || '').trim();
   const expanded = buildExpandedCueContext(cueIndex, focus);
-  const key = `en-ru:v4:${focus.toLowerCase()}|${expanded.toLowerCase()}`;
+  const key = `en-ru:v5:${focus.toLowerCase()}|${expanded.toLowerCase()}`;
   if (state.translationCache.has(key)) return state.translationCache.get(key);
   if (state.translationInflight.has(key)) return state.translationInflight.get(key);
 
@@ -2179,7 +2179,7 @@ async function translateWord(word, sentence = '') {
     return clean;
   }
   const ctx = sentence || state.lastPopupWord?.sentence || '';
-  const key = `word:v8:${clean.toLowerCase()}:${ctx}`;
+  const key = `word:v9:${clean.toLowerCase()}:${ctx}`;
   if (state.translationCache.has(key)) return state.translationCache.get(key);
   if (state.translationInflight.has(key)) return state.translationInflight.get(key);
 
