@@ -255,49 +255,58 @@
         </div>
 
         <div id="word-popup" class="popup hidden" role="dialog" aria-label="Перевод слова">
+          <div
+            class="popup__drag"
+            id="popup-drag"
+            title="Перетащите окно · двойной клик — сброс позиции"
+          ></div>
           <button type="button" class="popup__close" id="popup-close" aria-label="Закрыть">×</button>
-          <div class="popup__word" id="popup-word"></div>
-          <div class="popup__translation" id="popup-translation"></div>
-          <div class="popup__translation-note hidden" id="popup-translation-note"></div>
-          <div class="popup__translate-tools">
-            <span id="popup-provider" class="translation-provider hidden"></span>
-            <button
-              type="button"
-              id="popup-ai"
-              class="btn btn--ghost btn--sm translation-ai hidden"
-              title="Уточнить перевод через локальный ИИ с учётом контекста"
-            >ИИ · разбор</button>
-            <button
-              type="button"
-              id="popup-retry"
-              class="btn btn--ghost btn--sm translation-retry translation-retry--popup hidden"
-              title="Повторить перевод"
-            >↻ Повторить</button>
-          </div>
-          <div class="popup__context" id="popup-context"></div>
-          <div class="popup__actions">
-            <button type="button" class="btn btn--primary btn--sm" id="popup-save">+ В словарь</button>
-            <button type="button" class="btn btn--ghost btn--sm" id="popup-speak">🔊 Произнести</button>
-          </div>
-          <div class="popup__ask" id="popup-ask">
-            <div class="popup__ask-label">Спросить ИИ</div>
-            <div class="popup__ask-chips">
-              <button type="button" class="popup__ask-chip" data-q="Почему здесь так сказано? Что значит эта фраза?">Почему так?</button>
-              <button type="button" class="popup__ask-chip" data-q="Объясни грамматику этого выражения кратко.">Грамматика</button>
-              <button type="button" class="popup__ask-chip" data-q="Это идиома или сленг? Как звучит по-русски естественно?">Идиома?</button>
+          <div class="popup__body">
+            <div class="popup__main">
+              <div class="popup__word" id="popup-word"></div>
+              <div class="popup__translation" id="popup-translation"></div>
+              <div class="popup__translation-note hidden" id="popup-translation-note"></div>
+              <div class="popup__translate-tools">
+                <span id="popup-provider" class="translation-provider hidden"></span>
+                <button
+                  type="button"
+                  id="popup-ai"
+                  class="btn btn--ghost btn--sm translation-ai hidden"
+                  title="Уточнить перевод через локальный ИИ с учётом контекста"
+                >ИИ · разбор</button>
+                <button
+                  type="button"
+                  id="popup-retry"
+                  class="btn btn--ghost btn--sm translation-retry translation-retry--popup hidden"
+                  title="Повторить перевод"
+                >↻ Повторить</button>
+              </div>
+              <div class="popup__context" id="popup-context"></div>
+              <div class="popup__actions">
+                <button type="button" class="btn btn--primary btn--sm" id="popup-save">+ В словарь</button>
+                <button type="button" class="btn btn--ghost btn--sm" id="popup-speak">🔊 Произнести</button>
+              </div>
             </div>
-            <form class="popup__ask-form" id="popup-ask-form">
-              <input
-                type="text"
-                id="popup-ask-input"
-                class="popup__ask-input"
-                placeholder="Свой вопрос…"
-                maxlength="400"
-                autocomplete="off"
-              >
-              <button type="submit" class="btn btn--ghost btn--sm" id="popup-ask-send" title="Спросить">↵</button>
-            </form>
-            <div id="popup-ask-answer" class="popup__ask-answer hidden" aria-live="polite"></div>
+            <aside class="popup__ask" id="popup-ask" aria-label="Чат с ИИ">
+              <div class="popup__ask-label">Спросить ИИ</div>
+              <div class="popup__ask-chips">
+                <button type="button" class="popup__ask-chip" data-q="Почему здесь так сказано? Что значит эта фраза?">Почему так?</button>
+                <button type="button" class="popup__ask-chip" data-q="Объясни грамматику этого выражения кратко.">Грамматика</button>
+                <button type="button" class="popup__ask-chip" data-q="Это идиома или сленг? Как звучит по-русски естественно?">Идиома?</button>
+              </div>
+              <div id="popup-ask-log" class="popup__ask-log" aria-live="polite"></div>
+              <form class="popup__ask-form" id="popup-ask-form">
+                <input
+                  type="text"
+                  id="popup-ask-input"
+                  class="popup__ask-input"
+                  placeholder="Свой вопрос…"
+                  maxlength="400"
+                  autocomplete="off"
+                >
+                <button type="submit" class="btn btn--ghost btn--sm" id="popup-ask-send" title="Спросить">↵</button>
+              </form>
+            </aside>
           </div>
         </div>
       </section>

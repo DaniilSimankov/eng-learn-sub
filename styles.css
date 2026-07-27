@@ -858,13 +858,58 @@ body {
 .popup {
   position: fixed;
   z-index: 1000;
-  min-width: 260px;
-  max-width: min(380px, calc(100vw - 16px));
-  padding: 1rem;
+  width: min(640px, calc(100vw - 16px));
+  max-width: calc(100vw - 16px);
+  padding: 0.85rem 1rem 1rem;
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--radius);
   box-shadow: var(--shadow);
+}
+
+.popup__drag {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 2rem;
+  height: 1.1rem;
+  cursor: grab;
+  border-radius: var(--radius) var(--radius) 0 0;
+  z-index: 1;
+}
+
+.popup__drag::after {
+  content: '';
+  position: absolute;
+  top: 0.4rem;
+  left: 50%;
+  width: 2.25rem;
+  height: 3px;
+  transform: translateX(-50%);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.28);
+}
+
+.popup.is-dragging .popup__drag,
+.popup__drag:active {
+  cursor: grabbing;
+}
+
+.popup.is-dragging {
+  user-select: none;
+}
+
+.popup__body {
+  display: flex;
+  align-items: stretch;
+  gap: 0;
+  min-height: 0;
+}
+
+.popup__main {
+  flex: 0 1 260px;
+  min-width: 0;
+  padding-right: 0.85rem;
 }
 
 .popup__close {
@@ -877,6 +922,7 @@ body {
   font-size: 1.25rem;
   cursor: pointer;
   line-height: 1;
+  z-index: 2;
 }
 
 .popup__word {
@@ -924,23 +970,33 @@ body {
 }
 
 .popup__ask {
-  margin-top: 0.75rem;
-  padding-top: 0.7rem;
-  border-top: 1px solid var(--border);
+  flex: 1 1 280px;
+  min-width: 0;
+  max-width: 340px;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  margin: 0;
+  padding: 0 0.15rem 0 0.9rem;
+  border-top: none;
+  border-left: 1px solid var(--border);
+  max-height: min(320px, 55vh);
 }
 
 .popup__ask-label {
   font-size: 0.72rem;
   color: var(--text-muted);
-  margin-bottom: 0.4rem;
+  margin: 0;
   letter-spacing: 0.02em;
+  padding-right: 1.4rem;
 }
 
 .popup__ask-chips {
   display: flex;
   flex-wrap: wrap;
   gap: 0.35rem;
-  margin-bottom: 0.45rem;
+  margin: 0;
+  flex: 0 0 auto;
 }
 
 .popup__ask-chip {
@@ -958,10 +1014,68 @@ body {
   background: rgba(108, 140, 255, 0.18);
 }
 
+.popup__ask-log {
+  flex: 1 1 auto;
+  min-height: 96px;
+  max-height: 220px;
+  overflow-y: auto;
+  overflow-x: hidden;
+  overscroll-behavior: contain;
+  padding: 0.35rem 0.2rem 0.35rem 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.25) transparent;
+}
+
+.popup__ask-log::-webkit-scrollbar {
+  width: 6px;
+}
+
+.popup__ask-log::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.22);
+  border-radius: 999px;
+}
+
+.popup__ask-msg {
+  font-size: 0.8rem;
+  line-height: 1.4;
+  white-space: pre-wrap;
+  word-break: break-word;
+  padding: 0.4rem 0.55rem;
+  border-radius: 8px;
+}
+
+.popup__ask-msg--user {
+  align-self: flex-end;
+  max-width: 92%;
+  background: rgba(108, 140, 255, 0.18);
+  color: #dce3ff;
+}
+
+.popup__ask-msg--ai {
+  align-self: flex-start;
+  max-width: 96%;
+  background: rgba(255, 255, 255, 0.06);
+  color: #d7ddf0;
+}
+
+.popup__ask-msg--ai.is-loading {
+  color: var(--text-muted);
+  font-style: italic;
+}
+
+.popup__ask-msg--ai.is-error {
+  color: #f0b4b4;
+}
+
 .popup__ask-form {
   display: flex;
   gap: 0.35rem;
   align-items: center;
+  flex: 0 0 auto;
+  margin-top: auto;
 }
 
 .popup__ask-input {
@@ -979,21 +1093,33 @@ body {
   outline: 1px solid rgba(108, 140, 255, 0.55);
 }
 
-.popup__ask-answer {
-  margin-top: 0.5rem;
-  font-size: 0.82rem;
-  line-height: 1.4;
-  color: #d7ddf0;
-  white-space: pre-wrap;
-}
+@media (max-width: 640px) {
+  .popup {
+    width: min(420px, calc(100vw - 16px));
+  }
 
-.popup__ask-answer.is-loading {
-  color: var(--text-muted);
-  font-style: italic;
-}
+  .popup__body {
+    flex-direction: column;
+  }
 
-.popup__ask-answer.is-error {
-  color: #f0b4b4;
+  .popup__main {
+    flex: 1 1 auto;
+    padding-right: 0;
+    padding-bottom: 0.7rem;
+  }
+
+  .popup__ask {
+    flex: 1 1 auto;
+    max-width: none;
+    max-height: min(280px, 42vh);
+    padding: 0.7rem 0 0;
+    border-left: none;
+    border-top: 1px solid var(--border);
+  }
+
+  .popup__ask-log {
+    max-height: 160px;
+  }
 }
 
 .drawer__backdrop {

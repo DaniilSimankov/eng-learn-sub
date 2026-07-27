@@ -15,6 +15,7 @@ const PAGE_URL_KEY = 'sublearn-page-url';
 const SEEK_STEP_KEY = 'sublearn-seek-step';
 const WATCH_POS_KEY = 'sublearn-watch-pos';
 const WATCH_SESSION_KEY = 'sublearn-watch-session';
+const POPUP_POS_KEY = 'sublearn-popup-pos';
 const WATCH_POS_MIN_SEC = 5;
 const WATCH_POS_END_RATIO = 0.95;
 const WATCH_POS_SAVE_MS = 2000;
@@ -56,6 +57,8 @@ const state = {
   wordAnchorIndex: null,
   wordDrag: null,
   ignorePopupHideUntil: 0,
+  popupDrag: null,
+  popupPinnedPos: loadPopupPos(),
   preferredVoiceURI: null,
   translationCache: new Map(),
   translationInflight: new Map(),
@@ -124,8 +127,9 @@ const popupProvider = $('#popup-provider');
 const popupContext = $('#popup-context');
 const popupAskForm = $('#popup-ask-form');
 const popupAskInput = $('#popup-ask-input');
-const popupAskAnswer = $('#popup-ask-answer');
+const popupAskLog = $('#popup-ask-log');
 const popupAskSend = $('#popup-ask-send');
+const popupDragHandle = $('#popup-drag');
 const vocabDrawer = $('#vocab-drawer');
 const vocabList = $('#vocab-list');
 const vocabEmpty = $('#vocab-empty');
@@ -960,6 +964,18 @@ document.addEventListener('keydown', (e) => {
 
   if (e.key === 'Escape' && playerMenu && !playerMenu.classList.contains('hidden')) {
     closePlayerMenu();
+    return;
+  }
+
+  // Del / Backspace закрывает попап, если не печатаем в поле ввода.
+  if (
+    (e.key === 'Delete' || e.key === 'Backspace')
+    && !typing
+    && wordPopup
+    && !wordPopup.classList.contains('hidden')
+  ) {
+    e.preventDefault();
+    hidePopup();
     return;
   }
 
@@ -2362,6 +2378,67 @@ async function finishWordSelection(phrase, sentence, from, to) {
   }
 }
 
+function loadPopupPos() {
+  try {
+    const raw = localStorage.getItem(POPUP_POS_KEY);
+    if (!raw) return null;
+    const data = JSON.parse(raw);
+    const left = Number(data?.left);
+    const top = Number(data?.top);
+    if (!Number.isFinite(left) || !Number.isFinite(top)) return null;
+    return { left, top };
+  } catch {
+    return null;
+  }
+}
+
+function savePopupPos(pos) {
+  try {
+    if (!pos || !Number.isFinite(pos.left) || !Number.isFinite(pos.top)) {
+      localStorage.removeItem(POPUP_POS_KEY);
+      state.popupPinnedPos = null;
+      return;
+    }
+    const next = { left: Math.round(pos.left), top: Math.round(pos.top) };
+    state.popupPinnedPos = next;
+    localStorage.setItem(POPUP_POS_KEY, JSON.stringify(next));
+  } catch {
+    state.popupPinnedPos = pos || null;
+  }
+}
+
+function clearPopupPos() {
+  savePopupPos(null);
+}
+
+function clampPopupPos(left, top, width, height) {
+  const vw = window.innerWidth;
+  const vh = window.innerHeight;
+  const w = width || wordPopup.getBoundingClientRect().width || 320;
+  const h = height || wordPopup.getBoundingClientRect().height || 200;
+  return {
+    left: Math.max(8, Math.min(left, vw - w - 8)),
+    top: Math.max(8, Math.min(top, vh - h - 8)),
+  };
+}
+
+function placePopupNearWord(rect) {
+  const popupRect = wordPopup.getBoundingClientRect();
+  const vw = window.innerWidth;
+  const vh = window.innerHeight;
+  let left = rect.left + rect.width / 2 - popupRect.width / 2;
+  let top = rect.top - popupRect.height - 10;
+  if (top < 8) top = Math.min(rect.bottom + 10, vh - popupRect.height - 8);
+  return clampPopupPos(left, top, popupRect.width, popupRect.height);
+}
+
+function applyPopupPos(left, top, width, height) {
+  const clamped = clampPopupPos(left, top, width, height);
+  wordPopup.style.left = `${clamped.left}px`;
+  wordPopup.style.top = `${clamped.top}px`;
+  return clamped;
+}
+
 function showPopup(word, sentence, rect) {
   popupWord.textContent = word;
   popupTranslation.textContent = 'Перевод…';
@@ -2379,16 +2456,73 @@ function showPopup(word, sentence, rect) {
   resetPopupAsk();
   wordPopup.classList.remove('hidden');
 
-  const popupRect = wordPopup.getBoundingClientRect();
-  const vw = window.innerWidth;
-  const vh = window.innerHeight;
-  let left = rect.left + rect.width / 2 - popupRect.width / 2;
-  let top = rect.top - popupRect.height - 10;
-  if (top < 8) top = Math.min(rect.bottom + 10, vh - popupRect.height - 8);
-  left = Math.max(8, Math.min(left, vw - popupRect.width - 8));
-  wordPopup.style.left = `${left}px`;
-  wordPopup.style.top = `${top}px`;
+  const pinned = state.popupPinnedPos;
+  if (pinned) {
+    applyPopupPos(pinned.left, pinned.top);
+  } else {
+    const pos = placePopupNearWord(rect);
+    wordPopup.style.left = `${pos.left}px`;
+    wordPopup.style.top = `${pos.top}px`;
+  }
 }
+
+function bindPopupDrag() {
+  if (!popupDragHandle || !wordPopup || popupDragHandle.dataset.bound === '1') return;
+  popupDragHandle.dataset.bound = '1';
+
+  popupDragHandle.addEventListener('pointerdown', (e) => {
+    if (e.button != null && e.button !== 0) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const box = wordPopup.getBoundingClientRect();
+    state.popupDrag = {
+      pointerId: e.pointerId,
+      offsetX: e.clientX - box.left,
+      offsetY: e.clientY - box.top,
+      width: box.width,
+      height: box.height,
+    };
+    wordPopup.classList.add('is-dragging');
+    popupDragHandle.setPointerCapture?.(e.pointerId);
+  });
+
+  popupDragHandle.addEventListener('pointermove', (e) => {
+    const drag = state.popupDrag;
+    if (!drag || drag.pointerId !== e.pointerId) return;
+    e.preventDefault();
+    const left = e.clientX - drag.offsetX;
+    const top = e.clientY - drag.offsetY;
+    applyPopupPos(left, top, drag.width, drag.height);
+  });
+
+  const endDrag = (e) => {
+    const drag = state.popupDrag;
+    if (!drag || (e.pointerId != null && drag.pointerId !== e.pointerId)) return;
+    state.popupDrag = null;
+    wordPopup.classList.remove('is-dragging');
+    const box = wordPopup.getBoundingClientRect();
+    savePopupPos(clampPopupPos(box.left, box.top, box.width, box.height));
+  };
+
+  popupDragHandle.addEventListener('pointerup', endDrag);
+  popupDragHandle.addEventListener('pointercancel', endDrag);
+
+  popupDragHandle.addEventListener('dblclick', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    clearPopupPos();
+    // Следующий клик по слову снова привяжет окно к слову.
+  });
+}
+
+bindPopupDrag();
+
+window.addEventListener('resize', () => {
+  if (!wordPopup || wordPopup.classList.contains('hidden')) return;
+  const box = wordPopup.getBoundingClientRect();
+  const next = applyPopupPos(box.left, box.top, box.width, box.height);
+  if (state.popupPinnedPos) savePopupPos(next);
+});
 
 function setPopupTranslation(raw) {
   if (isTranslationFailure(raw)) {
@@ -2472,12 +2606,20 @@ async function refinePopupWithAi() {
 
 function resetPopupAsk() {
   if (popupAskInput) popupAskInput.value = '';
-  if (popupAskAnswer) {
-    popupAskAnswer.textContent = '';
-    popupAskAnswer.classList.add('hidden');
-    popupAskAnswer.classList.remove('is-loading', 'is-error');
-  }
+  if (popupAskLog) popupAskLog.innerHTML = '';
   if (popupAskSend) popupAskSend.disabled = false;
+}
+
+function appendAskMessage(role, text, { loading = false, error = false } = {}) {
+  if (!popupAskLog) return null;
+  const el = document.createElement('div');
+  el.className = `popup__ask-msg popup__ask-msg--${role === 'user' ? 'user' : 'ai'}`;
+  if (loading) el.classList.add('is-loading');
+  if (error) el.classList.add('is-error');
+  el.textContent = text;
+  popupAskLog.appendChild(el);
+  popupAskLog.scrollTop = popupAskLog.scrollHeight;
+  return el;
 }
 
 async function askPopupTutor(question) {
@@ -2486,20 +2628,17 @@ async function askPopupTutor(question) {
   const q = String(question || '').trim();
   if (!q) return;
   if (!state.onlineTranslation) {
-    if (popupAskAnswer) {
-      popupAskAnswer.textContent = 'Включите онлайн-перевод в настройках';
-      popupAskAnswer.classList.remove('hidden', 'is-loading');
-      popupAskAnswer.classList.add('is-error');
-    }
+    appendAskMessage('ai', 'Включите онлайн-перевод в настройках', { error: true });
     return;
   }
 
-  if (popupAskInput) popupAskInput.value = q;
-  if (popupAskAnswer) {
-    popupAskAnswer.textContent = state.aiReady ? 'ИИ думает…' : 'Загрузка модели…';
-    popupAskAnswer.classList.remove('hidden', 'is-error');
-    popupAskAnswer.classList.add('is-loading');
-  }
+  if (popupAskInput) popupAskInput.value = '';
+  appendAskMessage('user', q);
+  const pending = appendAskMessage(
+    'ai',
+    state.aiReady ? 'ИИ думает…' : 'Загрузка модели…',
+    { loading: true },
+  );
   if (popupAskSend) popupAskSend.disabled = true;
 
   try {
@@ -2516,19 +2655,20 @@ async function askPopupTutor(question) {
     const data = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(data.error || 'Ошибка разбора');
     if (state.lastPopupWord?.word !== current.word) return;
-    if (popupAskAnswer) {
-      popupAskAnswer.textContent = data.answer || 'Пустой ответ';
-      popupAskAnswer.classList.remove('is-loading', 'is-error');
+    if (pending) {
+      pending.textContent = data.answer || 'Пустой ответ';
+      pending.classList.remove('is-loading', 'is-error');
     }
   } catch (err) {
     if (state.lastPopupWord?.word !== current.word) return;
-    if (popupAskAnswer) {
-      popupAskAnswer.textContent = err?.message || 'Ошибка разбора';
-      popupAskAnswer.classList.remove('is-loading');
-      popupAskAnswer.classList.add('is-error');
+    if (pending) {
+      pending.textContent = err?.message || 'Ошибка разбора';
+      pending.classList.remove('is-loading');
+      pending.classList.add('is-error');
     }
   } finally {
     if (popupAskSend) popupAskSend.disabled = false;
+    if (popupAskLog) popupAskLog.scrollTop = popupAskLog.scrollHeight;
   }
 }
 
