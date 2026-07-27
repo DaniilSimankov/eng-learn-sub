@@ -10,12 +10,15 @@ const QUALITY_LEVEL_KEY = 'sublearn-quality-level';
 const LEARN_PANEL_H_KEY = 'sublearn-learn-panel-h';
 const SUBS_SIZE_KEY = 'sublearn-subs-size';
 const SUBS_POS_KEY = 'sublearn-subs-pos';
+const SUBS_WIDTH_KEY = 'sublearn-subs-width';
 const PAGE_URL_KEY = 'sublearn-page-url';
 const SEEK_STEP_KEY = 'sublearn-seek-step';
 const LEARN_PANEL_H_DEFAULT = 200;
 const LEARN_PANEL_H_MIN = 140;
 const LEARN_PANEL_H_MAX_RATIO = 0.55;
 const SUBS_SIZE_DEFAULT_PCT = 100;
+const SUBS_WIDTH_MIN_PCT = 18;
+const SUBS_WIDTH_MAX_PCT = 92;
 
 function loadSeekStep() {
   try {
@@ -59,6 +62,7 @@ const state = {
   seekStep: loadSeekStep(),
   subsEditMode: false,
   subsDrag: null,
+  subsResize: null,
 };
 
 const $ = (sel) => document.querySelector(sel);
@@ -132,6 +136,7 @@ const chromeVolume = $('#chrome-volume');
 const chromeMenuBtn = $('#chrome-menu-btn');
 const videoShell = $('#video-shell');
 const playerWrap = $('#player-wrap');
+const playerStage = $('#player-stage');
 const seekStepSelect = $('#seek-step-select');
 
 video.controls = false;
@@ -786,10 +791,15 @@ btnSubsEdit?.addEventListener('click', () => {
   playerSection.classList.toggle('is-subs-edit', state.subsEditMode);
   btnSubsEdit.classList.toggle('is-active', state.subsEditMode);
   btnSubsEdit.textContent = state.subsEditMode ? '✓ Готово' : '↕ Позиция';
-  if (!state.subsEditMode) subtitlePanel?.classList.remove('is-dragging');
+  if (!state.subsEditMode) {
+    subtitlePanel?.classList.remove('is-dragging', 'is-resizing');
+    state.subsDrag = null;
+    state.subsResize = null;
+  }
 });
 
 initSubsPanelDrag();
+applySubsWidth(loadSubsWidth());
 
 // --- Custom player chrome ---
 
@@ -949,6 +959,7 @@ function initPlayerChrome() {
 
   playerWrap?.addEventListener('mousemove', bumpChromeVisible);
   playerWrap?.addEventListener('pointerdown', bumpChromeVisible);
+  playerStage?.addEventListener('mousemove', bumpChromeVisible);
   playerChrome.addEventListener('mouseenter', bumpChromeVisible);
 
   videoShell?.addEventListener('click', (e) => {
@@ -1508,6 +1519,7 @@ function syncLearnFullscreenUI() {
   } else {
     applyLearnPanelHeight(loadLearnPanelHeight());
     applySubsPosition(loadSubsPosition());
+    applySubsWidth(loadSubsWidth());
     applySubsScale(state.subsScale);
   }
   bumpChromeVisible();
@@ -1841,6 +1853,7 @@ function applyWordRange(from, to) {
   return joinSelectedWords(words.slice(a, b + 1).map((w) => w.dataset.word));
 }
 
+/** Склеивает токены без пробела перед 'm / 's / n't и т.п. */
 function joinSelectedWords(parts) {
   let out = '';
   for (const raw of parts) {
@@ -2392,6 +2405,38 @@ function saveSubsPosition(pos) {
   } catch { /* ignore */ }
 }
 
+function loadSubsWidth() {
+  try {
+    const n = Number(localStorage.getItem(SUBS_WIDTH_KEY));
+    if (Number.isFinite(n) && n >= SUBS_WIDTH_MIN_PCT && n <= SUBS_WIDTH_MAX_PCT) return n;
+  } catch { /* ignore */ }
+  return null;
+}
+
+function saveSubsWidth(widthPct) {
+  try {
+    if (widthPct == null) localStorage.removeItem(SUBS_WIDTH_KEY);
+    else localStorage.setItem(SUBS_WIDTH_KEY, String(Math.round(widthPct * 10) / 10));
+  } catch { /* ignore */ }
+}
+
+function clampSubsWidth(widthPct) {
+  return Math.min(SUBS_WIDTH_MAX_PCT, Math.max(SUBS_WIDTH_MIN_PCT, widthPct));
+}
+
+function applySubsWidth(widthPct) {
+  if (!subtitlePanel) return null;
+  if (widthPct == null || !Number.isFinite(widthPct)) {
+    subtitlePanel.classList.remove('is-custom-width');
+    subtitlePanel.style.removeProperty('--subs-panel-w');
+    return null;
+  }
+  const w = clampSubsWidth(widthPct);
+  subtitlePanel.classList.add('is-custom-width');
+  subtitlePanel.style.setProperty('--subs-panel-w', `${w}%`);
+  return w;
+}
+
 const SUBS_SNAP_THRESHOLD = 2.4; // % — мягкий магнит как в PowerPoint
 
 function getSubsPositionBounds() {
@@ -2524,6 +2569,30 @@ function initSubsPanelDrag() {
   subtitlePanel.addEventListener('pointerdown', (e) => {
     if (!state.subsEditMode || !isLearnFullscreen()) return;
     if (e.target.closest('.word')) return;
+
+    const handle = e.target.closest('.subs-resize-handle');
+    if (handle) {
+      e.preventDefault();
+      e.stopPropagation();
+      const rect = playerSection.getBoundingClientRect();
+      const panelRect = subtitlePanel.getBoundingClientRect();
+      const edge = handle.dataset.edge === 'w' ? 'w' : 'e';
+      const startWidthPct = rect.width
+        ? (panelRect.width / rect.width) * 100
+        : SUBS_WIDTH_MIN_PCT;
+      state.subsResize = {
+        edge,
+        startX: e.clientX,
+        startWidthPct,
+        sectionW: rect.width,
+      };
+      state.subsDrag = null;
+      subtitlePanel.classList.add('is-resizing');
+      subtitlePanel.classList.remove('is-dragging');
+      handle.setPointerCapture?.(e.pointerId);
+      return;
+    }
+
     e.preventDefault();
     const rect = playerSection.getBoundingClientRect();
     const panelRect = subtitlePanel.getBoundingClientRect();
@@ -2541,6 +2610,15 @@ function initSubsPanelDrag() {
   });
 
   subtitlePanel.addEventListener('pointermove', (e) => {
+    if (state.subsResize) {
+      const { edge, startX, startWidthPct, sectionW } = state.subsResize;
+      if (!sectionW) return;
+      const dx = e.clientX - startX;
+      // Панель центрирована — оба края двигаются симметрично от центра
+      const delta = edge === 'e' ? dx * 2 : -dx * 2;
+      applySubsWidth(startWidthPct + (delta / sectionW) * 100);
+      return;
+    }
     if (!state.subsDrag) return;
     const { offsetX, offsetY, sectionLeft, sectionTop, sectionW, sectionH } = state.subsDrag;
     if (!sectionW || !sectionH) return;
@@ -2550,6 +2628,16 @@ function initSubsPanelDrag() {
   });
 
   const endDrag = () => {
+    if (state.subsResize) {
+      state.subsResize = null;
+      subtitlePanel.classList.remove('is-resizing');
+      if (subtitlePanel.classList.contains('is-custom-width')) {
+        const raw = subtitlePanel.style.getPropertyValue('--subs-panel-w');
+        const n = Number.parseFloat(raw);
+        if (Number.isFinite(n)) saveSubsWidth(n);
+      }
+      return;
+    }
     if (!state.subsDrag) return;
     state.subsDrag = null;
     subtitlePanel.classList.remove('is-dragging');
@@ -2565,8 +2653,13 @@ function initSubsPanelDrag() {
   subtitlePanel.addEventListener('pointerup', endDrag);
   subtitlePanel.addEventListener('pointercancel', endDrag);
 
-  subtitlePanel.addEventListener('dblclick', () => {
+  subtitlePanel.addEventListener('dblclick', (e) => {
     if (!state.subsEditMode || !isLearnFullscreen()) return;
+    if (e.target.closest('.subs-resize-handle')) {
+      applySubsWidth(null);
+      saveSubsWidth(null);
+      return;
+    }
     applySubsPosition(null);
     saveSubsPosition(null);
   });

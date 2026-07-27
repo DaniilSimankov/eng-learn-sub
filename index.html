@@ -103,12 +103,14 @@
           <div class="player-title" id="player-title"></div>
         </div>
 
-        <div class="player-wrap" id="player-wrap">
-          <div id="player-loading" class="player-loading hidden">Загрузка плеера…</div>
-          <div class="video-shell" id="video-shell">
-            <video id="video" preload="metadata" class="hidden" playsinline></video>
+        <div class="player-stage" id="player-stage">
+          <div class="player-wrap" id="player-wrap">
+            <div id="player-loading" class="player-loading hidden">Загрузка плеера…</div>
+            <div class="video-shell" id="video-shell">
+              <video id="video" preload="metadata" class="hidden" playsinline></video>
+            </div>
+            <iframe id="embed-frame" class="embed-frame hidden" allowfullscreen allow="autoplay; fullscreen; encrypted-media"></iframe>
           </div>
-          <iframe id="embed-frame" class="embed-frame hidden" allowfullscreen allow="autoplay; fullscreen; encrypted-media"></iframe>
 
           <div class="player-chrome is-chrome-visible" id="player-chrome">
             <div class="player-chrome__row">
@@ -179,7 +181,7 @@
               </label>
               <div class="menu-row">
                 <button type="button" id="btn-replay-line" class="btn btn--ghost btn--sm control--video-only">↺ Повторить фразу</button>
-                <button type="button" id="btn-subs-edit" class="btn btn--ghost btn--sm hidden" title="Переместить субтитры по экрану">
+                <button type="button" id="btn-subs-edit" class="btn btn--ghost btn--sm hidden" title="Позиция и ширина субтитров">
                   ↕ Позиция
                 </button>
               </div>
@@ -210,6 +212,22 @@
 
         <div class="player-learn-ui" id="player-learn-ui">
           <div class="subtitle-panel">
+            <div
+              class="subs-resize-handle subs-resize-handle--w"
+              data-edge="w"
+              role="separator"
+              aria-orientation="vertical"
+              aria-label="Изменить ширину субтитров"
+              title="Потяните, чтобы изменить ширину"
+            ></div>
+            <div
+              class="subs-resize-handle subs-resize-handle--e"
+              data-edge="e"
+              role="separator"
+              aria-orientation="vertical"
+              aria-label="Изменить ширину субтитров"
+              title="Потяните, чтобы изменить ширину"
+            ></div>
             <div class="subtitle-panel__label" id="subtitle-hint">
               Клик — слово · Shift+клик или протянуть — фраза
             </div>

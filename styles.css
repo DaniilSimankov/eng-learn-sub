@@ -514,13 +514,21 @@ body {
   word-break: break-all;
 }
 
-.player-wrap {
+.player-stage {
+  position: relative;
   background: #000;
   border-radius: var(--radius);
   overflow: hidden;
   box-shadow: var(--shadow);
-  position: relative;
   min-height: min(56vh, 520px);
+}
+
+.player-wrap {
+  position: relative;
+  background: #000;
+  border-radius: inherit;
+  overflow: hidden;
+  min-height: inherit;
 }
 
 .video-shell {
@@ -558,6 +566,7 @@ body {
 #video:focus-visible,
 .embed-frame:focus,
 .embed-frame:focus-visible,
+.player-stage:focus-within,
 .player-wrap:focus-within {
   outline: none;
   box-shadow: none;
@@ -962,6 +971,18 @@ body {
   display: none !important;
 }
 
+.player-section:fullscreen .player-stage,
+.player-section:-webkit-full-screen .player-stage,
+.player-section.is-learn-fs .player-stage {
+  position: absolute;
+  inset: 0;
+  border-radius: 0;
+  box-shadow: none;
+  z-index: auto;
+  min-height: 0;
+  overflow: visible;
+}
+
 .player-section:fullscreen .player-wrap,
 .player-section:-webkit-full-screen .player-wrap,
 .player-section.is-learn-fs .player-wrap {
@@ -1024,13 +1045,13 @@ body {
 .player-section:fullscreen .player-chrome,
 .player-section:-webkit-full-screen .player-chrome,
 .player-section.is-learn-fs .player-chrome {
-  z-index: 7;
+  z-index: 4;
 }
 
-/* Меню поверх субтитров, пока открыто */
-.player-section.is-menu-open:fullscreen .player-wrap,
-.player-section.is-menu-open:-webkit-full-screen .player-wrap,
-.player-section.is-learn-fs.is-menu-open .player-wrap {
+/* Меню поверх субтитров; видео остаётся под ними */
+.player-section.is-menu-open:fullscreen .player-chrome,
+.player-section.is-menu-open:-webkit-full-screen .player-chrome,
+.player-section.is-learn-fs.is-menu-open .player-chrome {
   z-index: 8;
 }
 
@@ -1062,6 +1083,7 @@ body {
   transform: translateX(-50%);
   width: fit-content;
   max-width: min(92%, 960px);
+  box-sizing: border-box;
   z-index: 6;
   margin: 0;
   border-radius: 10px;
@@ -1075,6 +1097,13 @@ body {
   overflow: visible;
   pointer-events: none;
   text-shadow: 0 1px 3px rgba(0, 0, 0, 0.85);
+}
+
+.player-section:fullscreen .subtitle-panel.is-custom-width,
+.player-section:-webkit-full-screen .subtitle-panel.is-custom-width,
+.player-section.is-learn-fs .subtitle-panel.is-custom-width {
+  width: var(--subs-panel-w, 60%);
+  max-width: 92%;
 }
 
 .player-section:fullscreen .subtitle-panel .word,
@@ -1105,6 +1134,47 @@ body {
 
 .player-section.is-subs-edit .subtitle-panel.is-dragging {
   cursor: grabbing;
+}
+
+.player-section.is-subs-edit .subtitle-panel.is-resizing {
+  cursor: ew-resize;
+}
+
+.subs-resize-handle {
+  display: none;
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 10px;
+  z-index: 2;
+  touch-action: none;
+  pointer-events: auto;
+  cursor: ew-resize;
+}
+
+.subs-resize-handle--w {
+  left: -5px;
+}
+
+.subs-resize-handle--e {
+  right: -5px;
+}
+
+.subs-resize-handle::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 3px;
+  height: 28px;
+  border-radius: 2px;
+  transform: translate(-50%, -50%);
+  background: rgba(108, 140, 255, 0.85);
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.25);
+}
+
+.player-section.is-subs-edit .subs-resize-handle {
+  display: block;
 }
 
 .snap-guides {
@@ -1156,6 +1226,7 @@ body {
   line-height: 1.4;
   padding: 0.35rem 0.5rem;
   overflow: visible;
+  overflow-wrap: anywhere;
   background: transparent;
   border-radius: 0;
 }
