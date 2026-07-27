@@ -23,7 +23,8 @@ services:
     environment:
       SUBLEARN_OLLAMA_URL: http://127.0.0.1:11434
       SUBLEARN_OLLAMA_MODEL: qwen3:4b
-      SUBLEARN_OLLAMA_NUM_THREAD: "4"
+      # Меньше потоков — оставляем ядра под декод видео/HLS в браузере.
+      SUBLEARN_OLLAMA_NUM_THREAD: "2"
       SUBLEARN_HOST: 0.0.0.0
       SUBLEARN_PORT: "8765"
       SUBLEARN_DATA_DIR: /app/data

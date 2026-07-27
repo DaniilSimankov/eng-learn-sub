@@ -738,9 +738,9 @@ OLLAMA_URL = os.environ.get("SUBLEARN_OLLAMA_URL", "http://127.0.0.1:11434").rst
 OLLAMA_MODEL = os.environ.get("SUBLEARN_OLLAMA_MODEL", "qwen3:4b")
 OLLAMA_KEEP_ALIVE = os.environ.get("OLLAMA_KEEP_ALIVE", "10m")
 try:
-    OLLAMA_NUM_THREAD = max(1, int(os.environ.get("SUBLEARN_OLLAMA_NUM_THREAD", "4")))
+    OLLAMA_NUM_THREAD = max(1, int(os.environ.get("SUBLEARN_OLLAMA_NUM_THREAD", "2")))
 except ValueError:
-    OLLAMA_NUM_THREAD = 4
+    OLLAMA_NUM_THREAD = 2
 
 
 def init_vocab_db() -> None:

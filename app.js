@@ -975,10 +975,15 @@ function initPlayerChrome() {
   video.addEventListener('play', () => {
     syncChromePlayIcon();
     bumpChromeVisible();
+    if (inlineTranslateTimer) {
+      clearTimeout(inlineTranslateTimer);
+      inlineTranslateTimer = 0;
+    }
   });
   video.addEventListener('pause', () => {
     syncChromePlayIcon();
     bumpChromeVisible();
+    refreshInlineTranslationOnPause();
   });
   video.addEventListener('volumechange', () => {
     syncChromeMuteIcon();
@@ -1776,8 +1781,10 @@ function renderCurrentCue() {
   subtitleMeta.textContent = `#${state.currentCueIndex + 1} / ${state.cues.length} · ${formatTime(cue.start)} → ${formatTime(cue.end)}`;
 
   if (showRuInline.checked) {
-    subtitleTranslation.textContent = '…';
     subtitleTranslation.classList.remove('hidden');
+    if (!isVideoActivelyPlaying()) {
+      subtitleTranslation.textContent = '…';
+    }
     scheduleInlineTranslation(cue.text, state.currentCueIndex);
   } else {
     subtitleTranslation.classList.add('hidden');
@@ -1786,11 +1793,32 @@ function renderCurrentCue() {
 }
 
 let inlineTranslateTimer = 0;
+
+function isVideoActivelyPlaying() {
+  return state.playbackMode === 'video' && !video.paused && !video.ended;
+}
+
 function scheduleInlineTranslation(text, cueIndex) {
-  if (inlineTranslateTimer) clearTimeout(inlineTranslateTimer);
+  if (inlineTranslateTimer) {
+    clearTimeout(inlineTranslateTimer);
+    inlineTranslateTimer = 0;
+  }
   const focus = String(text || '').trim();
   const expanded = buildExpandedCueContext(cueIndex, focus);
   const cachedKey = `en-ru:v4:${focus.toLowerCase()}|${expanded.toLowerCase()}`;
+
+  // Во время playback Ollama (qwen3:4b) съедает CPU → видео тормозит, звук идёт.
+  // Пока играет — только кэш; инференс на паузе.
+  if (isVideoActivelyPlaying()) {
+    if (state.translationCache.has(cachedKey)) {
+      subtitleTranslation.textContent = state.translationCache.get(cachedKey);
+      subtitleTranslation.classList.remove('hidden');
+    } else {
+      subtitleTranslation.textContent = '';
+    }
+    return;
+  }
+
   if (state.translationCache.has(cachedKey)) {
     translateText(text, cueIndex).then((ru) => {
       if (state.currentCueIndex === cueIndex && showRuInline.checked) {
@@ -1800,17 +1828,27 @@ function scheduleInlineTranslation(text, cueIndex) {
     });
     return;
   }
-  // Пока играет видео — дольше ждём, чтобы Ollama не отбирала CPU у декодера/HLS.
-  const delay = state.playbackMode === 'video' && !video.paused ? 500 : 200;
+
   inlineTranslateTimer = setTimeout(() => {
+    inlineTranslateTimer = 0;
     if (state.currentCueIndex !== cueIndex || !showRuInline.checked) return;
+    if (isVideoActivelyPlaying()) return;
     translateText(text, cueIndex).then((ru) => {
-      if (state.currentCueIndex === cueIndex && showRuInline.checked) {
+      if (state.currentCueIndex === cueIndex && showRuInline.checked && !isVideoActivelyPlaying()) {
         subtitleTranslation.textContent = ru;
         subtitleTranslation.classList.remove('hidden');
       }
     });
-  }, delay);
+  }, 200);
+}
+
+function refreshInlineTranslationOnPause() {
+  if (!showRuInline.checked || state.currentCueIndex < 0) return;
+  const cue = state.cues[state.currentCueIndex];
+  if (!cue?.text) return;
+  subtitleTranslation.textContent = '…';
+  subtitleTranslation.classList.remove('hidden');
+  scheduleInlineTranslation(cue.text, state.currentCueIndex);
 }
 
 function tokenizeToHtml(text) {
