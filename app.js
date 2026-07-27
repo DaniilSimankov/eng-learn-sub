@@ -46,6 +46,8 @@ const state = {
   ignorePopupHideUntil: 0,
   preferredVoiceURI: null,
   translationCache: new Map(),
+  translationInflight: new Map(),
+  activeCueSentence: '',
   vocabulary: [],
   resolved: null,
   selectedPlayer: null,
@@ -1671,10 +1673,41 @@ function parseManualTimeInput(str) {
 
 // --- Playback sync ---
 
+function findCueIndexAt(seconds) {
+  const cues = state.cues;
+  if (!cues.length) return -1;
+
+  // Monotonic pointer: playback usually advances near the current cue.
+  let idx = state.currentCueIndex;
+  if (idx >= 0 && idx < cues.length) {
+    const cur = cues[idx];
+    if (seconds >= cur.start && seconds <= cur.end) return idx;
+    if (idx + 1 < cues.length) {
+      const next = cues[idx + 1];
+      if (seconds >= next.start && seconds <= next.end) return idx + 1;
+    }
+    if (idx > 0) {
+      const prev = cues[idx - 1];
+      if (seconds >= prev.start && seconds <= prev.end) return idx - 1;
+    }
+  }
+
+  let lo = 0;
+  let hi = cues.length - 1;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    const cue = cues[mid];
+    if (seconds < cue.start) hi = mid - 1;
+    else if (seconds > cue.end) lo = mid + 1;
+    else return mid;
+  }
+  return -1;
+}
+
 function onTimeUpdate() {
   if (state.playbackMode !== 'video' || !state.cues.length) return;
   const t = video.currentTime;
-  const idx = state.cues.findIndex((c) => t >= c.start && t <= c.end);
+  const idx = findCueIndexAt(t);
   if (idx !== state.currentCueIndex) {
     state.currentCueIndex = idx;
     renderCurrentCue();
@@ -1684,7 +1717,7 @@ function onTimeUpdate() {
 function syncByManualTime() {
   const seconds = parseManualTimeInput(manualTime.value);
   if (seconds == null || !state.cues.length) return;
-  const idx = state.cues.findIndex((c) => seconds >= c.start && seconds <= c.end);
+  const idx = findCueIndexAt(seconds);
   state.currentCueIndex = idx >= 0 ? idx : findNearestCue(seconds);
   renderCurrentCue();
 }
@@ -1718,10 +1751,12 @@ function renderCurrentCue() {
     }
     subtitleTranslation.classList.add('hidden');
     subtitleMeta.textContent = '';
+    state.activeCueSentence = '';
     return;
   }
 
   const cue = state.cues[state.currentCueIndex];
+  state.activeCueSentence = cue.text;
   subtitleDisplay.innerHTML = tokenizeToHtml(cue.text);
   bindWordClicks(cue.text);
   subtitleMeta.textContent = `#${state.currentCueIndex + 1} / ${state.cues.length} · ${formatTime(cue.start)} → ${formatTime(cue.end)}`;
@@ -1729,15 +1764,43 @@ function renderCurrentCue() {
   if (showRuInline.checked) {
     subtitleTranslation.textContent = '…';
     subtitleTranslation.classList.remove('hidden');
-    translateText(cue.text).then((ru) => {
-      if (state.cues[state.currentCueIndex]?.text === cue.text && showRuInline.checked) {
+    scheduleInlineTranslation(cue.text, state.currentCueIndex);
+  } else {
+    subtitleTranslation.classList.add('hidden');
+    subtitleTranslation.textContent = '';
+  }
+}
+
+let inlineTranslateTimer = 0;
+function scheduleInlineTranslation(text, cueIndex) {
+  if (inlineTranslateTimer) clearTimeout(inlineTranslateTimer);
+  const cachedKey = `en-ru:v3:${text}`;
+  if (state.translationCache.has(cachedKey)) {
+    translateText(text).then((ru) => {
+      if (state.currentCueIndex === cueIndex && showRuInline.checked) {
         subtitleTranslation.textContent = ru;
         subtitleTranslation.classList.remove('hidden');
       }
     });
-  } else {
-    subtitleTranslation.classList.add('hidden');
-    subtitleTranslation.textContent = '';
+    prefetchNeighborTranslations(cueIndex);
+    return;
+  }
+  inlineTranslateTimer = setTimeout(() => {
+    translateText(text).then((ru) => {
+      if (state.currentCueIndex === cueIndex && showRuInline.checked) {
+        subtitleTranslation.textContent = ru;
+        subtitleTranslation.classList.remove('hidden');
+      }
+    });
+    prefetchNeighborTranslations(cueIndex);
+  }, 350);
+}
+
+function prefetchNeighborTranslations(cueIndex) {
+  if (!showRuInline.checked || !state.onlineTranslation) return;
+  for (const offset of [1, -1]) {
+    const neighbor = state.cues[cueIndex + offset];
+    if (neighbor?.text) translateText(neighbor.text).catch(() => {});
   }
 }
 
@@ -1778,31 +1841,44 @@ function applyWordRange(from, to) {
 }
 
 function bindWordClicks(sentence) {
-  const words = getCueWordEls();
   state.wordAnchorIndex = null;
   state.wordDrag = null;
+  state.activeCueSentence = sentence;
+  ensureWordPointerDelegation();
+}
 
-  words.forEach((el, idx) => {
-    el.addEventListener('pointerdown', (e) => {
-      if (e.button !== 0 || state.subsEditMode) return;
+let wordPointerDelegationBound = false;
+function ensureWordPointerDelegation() {
+  if (wordPointerDelegationBound) return;
+  wordPointerDelegationBound = true;
+
+  subtitleDisplay.addEventListener('pointerdown', (e) => {
+    if (e.button !== 0 || state.subsEditMode) return;
+    const el = e.target?.closest?.('.word');
+    if (!el || !subtitleDisplay.contains(el)) return;
+    const words = getCueWordEls();
+    const idx = words.indexOf(el);
+    if (idx < 0) return;
+    e.preventDefault();
+    e.stopPropagation();
+    try { el.setPointerCapture?.(e.pointerId); } catch { /* ignore */ }
+    const sentence = state.activeCueSentence || '';
+    state.wordDrag = { start: idx, end: idx, sentence, pointerId: e.pointerId };
+    if (e.shiftKey && state.wordAnchorIndex != null) {
+      applyWordRange(state.wordAnchorIndex, idx);
+      state.wordDrag.start = state.wordAnchorIndex;
+      state.wordDrag.end = idx;
+    } else {
+      state.wordAnchorIndex = idx;
+      applyWordRange(idx, idx);
+    }
+  });
+
+  subtitleDisplay.addEventListener('click', (e) => {
+    if (e.target?.closest?.('.word')) {
       e.preventDefault();
       e.stopPropagation();
-      try { el.setPointerCapture?.(e.pointerId); } catch { /* ignore */ }
-      state.wordDrag = { start: idx, end: idx, sentence, pointerId: e.pointerId };
-      if (e.shiftKey && state.wordAnchorIndex != null) {
-        applyWordRange(state.wordAnchorIndex, idx);
-        state.wordDrag.start = state.wordAnchorIndex;
-        state.wordDrag.end = idx;
-      } else {
-        state.wordAnchorIndex = idx;
-        applyWordRange(idx, idx);
-      }
-    });
-
-    el.addEventListener('click', (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-    });
+    }
   });
 }
 
@@ -1972,13 +2048,22 @@ async function translateText(text) {
   }
   const key = `en-ru:v3:${text}`;
   if (state.translationCache.has(key)) return state.translationCache.get(key);
-  try {
-    const result = await fetchTranslation(text);
-    state.translationCache.set(key, result);
-    return result;
-  } catch (err) {
-    return err?.message || 'Ошибка перевода';
-  }
+  if (state.translationInflight.has(key)) return state.translationInflight.get(key);
+
+  const pending = (async () => {
+    try {
+      const result = await fetchTranslation(text);
+      state.translationCache.set(key, result);
+      return result;
+    } catch (err) {
+      return err?.message || 'Ошибка перевода';
+    } finally {
+      state.translationInflight.delete(key);
+    }
+  })();
+
+  state.translationInflight.set(key, pending);
+  return pending;
 }
 
 async function translateWord(word, sentence = '') {
@@ -1989,13 +2074,22 @@ async function translateWord(word, sentence = '') {
   const ctx = sentence || state.lastPopupWord?.sentence || '';
   const key = `word:v5:${clean.toLowerCase()}:${ctx}`;
   if (state.translationCache.has(key)) return state.translationCache.get(key);
-  try {
-    const result = await fetchTranslation(clean, { word: clean, sentence: ctx });
-    state.translationCache.set(key, result);
-    return result;
-  } catch (err) {
-    return err?.message || '…';
-  }
+  if (state.translationInflight.has(key)) return state.translationInflight.get(key);
+
+  const pending = (async () => {
+    try {
+      const result = await fetchTranslation(clean, { word: clean, sentence: ctx });
+      state.translationCache.set(key, result);
+      return result;
+    } catch (err) {
+      return err?.message || '…';
+    } finally {
+      state.translationInflight.delete(key);
+    }
+  })();
+
+  state.translationInflight.set(key, pending);
+  return pending;
 }
 
 function pickEnglishVoice() {

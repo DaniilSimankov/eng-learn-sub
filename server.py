@@ -14,6 +14,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
+from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -23,6 +24,14 @@ ROOT = Path(__file__).resolve().parent
 DATA_DIR = Path(os.environ.get("SUBLEARN_DATA_DIR", str(ROOT / "data")))
 DB_PATH = DATA_DIR / "vocab.db"
 _db_lock = threading.RLock()
+_dns_lock = threading.Lock()
+_translate_cache_lock = threading.Lock()
+_dns_cache: dict[str, tuple[float, list[str]]] = {}
+_DNS_TTL_SEC = 600
+_SSL_CONTEXT = ssl.create_default_context()
+_ad_skip_script: Optional[str] = None
+_TRANSLATE_CACHE_MAX = 512
+_translate_cache: OrderedDict[str, str] = OrderedDict()
 USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
     "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
@@ -121,6 +130,12 @@ def _host_matches_embed(host: str) -> bool:
 
 
 def _resolve_public_ips(host: str) -> list[str]:
+    now = time.monotonic()
+    with _dns_lock:
+        cached = _dns_cache.get(host)
+        if cached and now - cached[0] < _DNS_TTL_SEC:
+            return list(cached[1])
+
     try:
         infos = socket.getaddrinfo(host, None, type=socket.SOCK_STREAM)
     except socket.gaierror as exc:
@@ -132,7 +147,13 @@ def _resolve_public_ips(host: str) -> list[str]:
             ips.append(ip)
     if not ips:
         raise SecurityError(f"Хост не найден: {host}")
-    return ips
+
+    with _dns_lock:
+        _dns_cache[host] = (now, ips)
+        if len(_dns_cache) > 256:
+            oldest = next(iter(_dns_cache))
+            _dns_cache.pop(oldest, None)
+    return list(ips)
 
 
 def _assert_public_target(url: str) -> None:
@@ -196,8 +217,7 @@ def validate_media_url(url: str) -> str:
 
 def fetch_url(url: str, timeout: int = 20) -> str:
     req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
-    ctx = ssl.create_default_context()
-    with urllib.request.urlopen(req, timeout=timeout, context=ctx) as resp:
+    with urllib.request.urlopen(req, timeout=timeout, context=_SSL_CONTEXT) as resp:
         charset = resp.headers.get_content_charset() or "utf-8"
         return resp.read().decode(charset, errors="replace")
 
@@ -205,8 +225,7 @@ def fetch_url(url: str, timeout: int = 20) -> str:
 def fetch_binary(url: str, timeout: int = 30) -> Tuple[bytes, str]:
     validate_media_url(url)
     req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
-    ctx = ssl.create_default_context()
-    with urllib.request.urlopen(req, timeout=timeout, context=ctx) as resp:
+    with urllib.request.urlopen(req, timeout=timeout, context=_SSL_CONTEXT) as resp:
         data = resp.read()
         ctype = resp.headers.get("Content-Type") or "application/octet-stream"
         return data, ctype
@@ -217,10 +236,9 @@ def embed_is_available(url: str) -> bool:
         validate_embed_url(url)
     except SecurityError:
         return False
-    ctx = ssl.create_default_context()
     try:
         req = urllib.request.Request(url, method="HEAD", headers={"User-Agent": USER_AGENT})
-        with urllib.request.urlopen(req, timeout=4, context=ctx) as resp:
+        with urllib.request.urlopen(req, timeout=4, context=_SSL_CONTEXT) as resp:
             return resp.status < 400
     except urllib.error.HTTPError as exc:
         if exc.code in (405, 501):
@@ -395,13 +413,13 @@ def pick_cc_track(cc_list: list) -> Optional[str]:
             pts -= 40
         return pts
 
-    ranked = sorted(cc_list, key=score, reverse=True)
-    best = ranked[0]
-    if score(best) < 60:
+    ranked = sorted(((score(item), item) for item in cc_list), key=lambda pair: pair[0], reverse=True)
+    best_score, best = ranked[0]
+    if best_score < 60:
         return None
 
-    for item in ranked:
-        if score(item) < 60:
+    for pts, item in ranked:
+        if pts < 60:
             break
         url = item.get("url")
         if not url:
@@ -626,10 +644,12 @@ def resolve_page(url: str) -> dict:
 
 
 def load_ad_skip_script() -> str:
+    global _ad_skip_script
+    if _ad_skip_script is not None:
+        return _ad_skip_script
     path = ROOT / "ad-skip.js"
-    if path.exists():
-        return path.read_text(encoding="utf-8")
-    return ""
+    _ad_skip_script = path.read_text(encoding="utf-8") if path.exists() else ""
+    return _ad_skip_script
 
 
 def is_embed_url(url: str) -> bool:
@@ -820,7 +840,7 @@ def vocab_add(
 
 
 def vocab_import_many(items: list) -> int:
-    imported = 0
+    prepared = []
     for raw in items:
         if not isinstance(raw, dict):
             continue
@@ -830,11 +850,36 @@ def vocab_import_many(items: list) -> int:
             continue
         context = str(raw.get("context") or "").strip()
         saved_at = raw.get("savedAt")
+        ts = int(saved_at) if saved_at is not None else int(time.time() * 1000)
+        prepared.append((word, translation, context, ts))
+    if not prepared:
+        return 0
+
+    imported = 0
+    with _db_lock:
+        conn = _db()
         try:
-            vocab_add(word, translation, context, saved_at=saved_at)
-            imported += 1
-        except ValueError:
-            continue
+            for word, translation, context, ts in prepared:
+                existing = conn.execute(
+                    "SELECT id FROM vocabulary "
+                    "WHERE lower(word)=lower(?) AND context=? LIMIT 1",
+                    (word, context),
+                ).fetchone()
+                if existing:
+                    conn.execute(
+                        "UPDATE vocabulary SET translation=?, saved_at=? WHERE id=?",
+                        (translation, ts, existing["id"]),
+                    )
+                else:
+                    conn.execute(
+                        "INSERT INTO vocabulary (word, translation, context, saved_at) "
+                        "VALUES (?, ?, ?, ?)",
+                        (word, translation, context, ts),
+                    )
+                imported += 1
+            conn.commit()
+        finally:
+            conn.close()
     return imported
 
 
@@ -1039,6 +1084,29 @@ def _is_bad_word_translation(result: str, target: str) -> bool:
     return False
 
 
+def _translate_cache_key(text: str, word: Optional[str], sentence: Optional[str]) -> str:
+    if word:
+        return f"w:{word.strip().lower()}|{(sentence or '').strip().lower()}"
+    return f"t:{(text or '').strip().lower()}"
+
+
+def _translate_cache_get(key: str) -> Optional[str]:
+    with _translate_cache_lock:
+        value = _translate_cache.get(key)
+        if value is None:
+            return None
+        _translate_cache.move_to_end(key)
+        return value
+
+
+def _translate_cache_put(key: str, value: str) -> None:
+    with _translate_cache_lock:
+        _translate_cache[key] = value
+        _translate_cache.move_to_end(key)
+        while len(_translate_cache) > _TRANSLATE_CACHE_MAX:
+            _translate_cache.popitem(last=False)
+
+
 def ollama_translate(text: str, *, word: Optional[str] = None, sentence: Optional[str] = None) -> str:
     cleaned = (text or "").strip()
     if not cleaned:
@@ -1046,11 +1114,17 @@ def ollama_translate(text: str, *, word: Optional[str] = None, sentence: Optiona
     if len(cleaned) > 800:
         raise ValueError("Слишком длинный текст (макс. 800 символов)")
 
+    cache_key = _translate_cache_key(cleaned, word, sentence)
+    cached = _translate_cache_get(cache_key)
+    if cached is not None:
+        return cached
+
     if word:
         target = word.strip()
         ctx = (sentence or "").strip()
         gloss = _glossary_lookup(target, ctx)
         if gloss:
+            _translate_cache_put(cache_key, gloss)
             return gloss
 
         if len(ctx) > 280:
@@ -1078,19 +1152,9 @@ def ollama_translate(text: str, *, word: Optional[str] = None, sentence: Optiona
             {"role": "assistant", "content": "определённый артикль the"},
             {
                 "role": "user",
-                "content": "Переведи только [[...]]:\n[[Shut]] the fuck up.\n\nФраза: Shut",
-            },
-            {"role": "assistant", "content": "закрыть; заткнуть"},
-            {
-                "role": "user",
                 "content": "Переведи только [[...]]:\nof course I'd [[fucking]] go.\n\nФраза: fucking",
             },
             {"role": "assistant", "content": "блять (усиление)"},
-            {
-                "role": "user",
-                "content": "Переведи только [[...]]:\nI don't [[know]].\n\nФраза: know",
-            },
-            {"role": "assistant", "content": "знать"},
             {
                 "role": "user",
                 "content": "Переведи только [[...]]:\n[[Shut the fuck up]].\n\nФраза: Shut the fuck up",
@@ -1103,6 +1167,7 @@ def ollama_translate(text: str, *, word: Optional[str] = None, sentence: Optiona
     else:
         phrase_gloss = _glossary_lookup(cleaned)
         if phrase_gloss and " " in _normalize_phrase_key(cleaned):
+            _translate_cache_put(cache_key, phrase_gloss)
             return phrase_gloss
 
         system = (
@@ -1127,7 +1192,7 @@ def ollama_translate(text: str, *, word: Optional[str] = None, sentence: Optiona
             "temperature": temperature,
             "top_p": 0.8,
             "num_predict": num_predict,
-            "num_ctx": 2048,
+            "num_ctx": 1024,
         },
         "messages": messages,
     }
@@ -1146,10 +1211,12 @@ def ollama_translate(text: str, *, word: Optional[str] = None, sentence: Optiona
         result = _normalize_word_gloss_case(result)
         gloss = _glossary_lookup(word, sentence)
         if gloss and _is_bad_word_translation(result, word):
+            _translate_cache_put(cache_key, gloss)
             return gloss
         if _is_bad_word_translation(result, word):
             raise RuntimeError("Модель вернула некорректный перевод")
 
+    _translate_cache_put(cache_key, result)
     return result
 
 
@@ -1198,6 +1265,12 @@ def _clean_translation(raw: str) -> str:
 class SubLearnHandler(SimpleHTTPRequestHandler):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, directory=str(ROOT), **kwargs)
+
+    def log_message(self, fmt: str, *args) -> None:
+        path = urlparse(self.path).path
+        if path in ("/api/stream", "/api/subtitles"):
+            return
+        super().log_message(fmt, *args)
 
     def end_headers(self):
         parsed = urlparse(self.path)

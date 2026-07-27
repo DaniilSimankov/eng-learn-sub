@@ -17,7 +17,9 @@
     'iframe[src*="ad."]', 'iframe[src*="ads."]',
   ].join(',');
 
+  var SKIP_SELECTORS = 'button, a, [role="button"], .btn, [aria-label]';
   var clicked = new WeakSet();
+  var scheduled = false;
 
   function isVisible(el) {
     if (!el || el.nodeType !== 1) return false;
@@ -26,20 +28,19 @@
   }
 
   function clickSkipButtons() {
-    var nodes = document.querySelectorAll(
-      'button, a, [role="button"], .btn, span, div, p, label'
-    );
-    nodes.forEach(function (el) {
-      if (clicked.has(el) || !isVisible(el)) return;
+    var nodes = document.querySelectorAll(SKIP_SELECTORS);
+    for (var i = 0; i < nodes.length; i++) {
+      var el = nodes[i];
+      if (clicked.has(el) || !isVisible(el)) continue;
       var text = (el.textContent || el.getAttribute('aria-label') || '').trim();
-      if (!text || text.length > 48) return;
+      if (!text || text.length > 48) continue;
       if (SKIP_TEXT.test(text)) {
         try {
           el.click();
           clicked.add(el);
         } catch (e) { /* ignore */ }
       }
-    });
+    }
   }
 
   function hideAdBlocks() {
@@ -80,13 +81,21 @@
     speedUpAdVideos();
   }
 
+  function scheduleTick() {
+    if (scheduled) return;
+    scheduled = true;
+    setTimeout(function () {
+      scheduled = false;
+      tick();
+    }, 250);
+  }
+
   tick();
-  setInterval(tick, 400);
+  setInterval(tick, 1200);
   if (typeof MutationObserver !== 'undefined') {
-    new MutationObserver(tick).observe(document.documentElement, {
+    new MutationObserver(scheduleTick).observe(document.documentElement, {
       childList: true,
       subtree: true,
-      attributes: true,
     });
   }
 })();
