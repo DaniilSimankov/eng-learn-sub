@@ -14,6 +14,7 @@ const SUBS_WIDTH_KEY = 'sublearn-subs-width';
 const PAGE_URL_KEY = 'sublearn-page-url';
 const SEEK_STEP_KEY = 'sublearn-seek-step';
 const WATCH_POS_KEY = 'sublearn-watch-pos';
+const WATCH_SESSION_KEY = 'sublearn-watch-session';
 const WATCH_POS_MIN_SEC = 5;
 const WATCH_POS_END_RATIO = 0.95;
 const WATCH_POS_SAVE_MS = 2000;
@@ -283,6 +284,69 @@ function restoreWatchPosition() {
   }
 }
 
+function loadWatchSession() {
+  try {
+    const raw = localStorage.getItem(WATCH_SESSION_KEY);
+    if (!raw) return null;
+    const data = JSON.parse(raw);
+    if (!data || typeof data.url !== 'string' || !data.url.trim()) return null;
+    return data;
+  } catch {
+    return null;
+  }
+}
+
+function saveWatchSession(partial = {}) {
+  try {
+    const prev = loadWatchSession() || {};
+    const url = (partial.url ?? prev.url ?? pageUrl?.value?.trim() ?? '').trim();
+    if (!url) return;
+    const playerIndex = partial.playerIndex ?? prev.playerIndex ?? state.selectedPlayer?.index ?? null;
+    const next = {
+      url,
+      playerIndex: Number.isFinite(Number(playerIndex)) ? Number(playerIndex) : null,
+      active: partial.active !== undefined ? !!partial.active : true,
+    };
+    localStorage.setItem(WATCH_SESSION_KEY, JSON.stringify(next));
+  } catch { /* ignore */ }
+}
+
+function clearWatchSession() {
+  try {
+    localStorage.removeItem(WATCH_SESSION_KEY);
+  } catch { /* ignore */ }
+}
+
+function switchToUrlMode() {
+  state.mode = 'url';
+  $$('.mode-tab').forEach((t) => t.classList.toggle('is-active', t.dataset.mode === 'url'));
+  $('#setup-url')?.classList.remove('hidden');
+  $('#setup-file')?.classList.add('hidden');
+}
+
+async function tryRestoreWatchSession() {
+  const session = loadWatchSession();
+  if (!session?.active || !session.url) return;
+  switchToUrlMode();
+  if (pageUrl) pageUrl.value = session.url;
+  savePageUrl(session.url);
+  setupPlayerUI();
+  playerTitle.textContent = 'Восстановление…';
+  video.classList.add('hidden');
+  embedFrame.classList.add('hidden');
+  showPlayerLoading('Восстанавливаем просмотр…');
+  setStatus('Восстанавливаем просмотр…');
+  await resolvePageUrl({
+    preferredPlayerIndex: session.playerIndex,
+    autoStart: true,
+  });
+  if (!state.resolved || !state.selectedPlayer || playerSection.classList.contains('hidden')) {
+    hidePlayerLoading();
+    setupPanel.classList.remove('hidden');
+    playerSection.classList.add('hidden');
+  }
+}
+
 pageUrl?.addEventListener('change', () => {
   const url = pageUrl.value.trim();
   if (url) savePageUrl(url);
@@ -323,7 +387,7 @@ subsInputUrl.addEventListener('change', async (e) => {
 
 btnStart.addEventListener('click', () => startFilePlayer());
 btnStartUrl.addEventListener('click', () => startUrlPlayer());
-btnResolve.addEventListener('click', resolvePageUrl);
+btnResolve.addEventListener('click', () => resolvePageUrl());
 pageUrl.addEventListener('keydown', (e) => {
   if (e.key === 'Enter') resolvePageUrl();
 });
@@ -1161,10 +1225,13 @@ initVocabulary();
 updateStartButton();
 updateStartUrlButton();
 applySubsPosition(loadSubsPosition());
+tryRestoreWatchSession();
 
 // --- URL resolve ---
 
-async function resolvePageUrl() {
+async function resolvePageUrl(options = {}) {
+  const preferredPlayerIndex = options.preferredPlayerIndex;
+  const autoStart = !!options.autoStart;
   const url = pageUrl.value.trim();
   if (!url) {
     setStatus('Вставьте ссылку на страницу серии', true);
@@ -1172,7 +1239,7 @@ async function resolvePageUrl() {
   }
   savePageUrl(url);
 
-  setStatus('Ищу Ylitron ID на странице NewDeaf…');
+  setStatus(autoStart ? 'Восстанавливаем просмотр…' : 'Ищу Ylitron ID на странице NewDeaf…');
   btnResolve.disabled = true;
 
   try {
@@ -1188,8 +1255,12 @@ async function resolvePageUrl() {
       if (!a.streamUrl && b.streamUrl) return 1;
       return a.index - b.index;
     });
+    const preferred = Number.isFinite(Number(preferredPlayerIndex))
+      ? sorted.find((p) => p.index === Number(preferredPlayerIndex) && p.available !== false)
+      : null;
     state.selectedPlayer =
-      sorted.find((p) => p.available !== false && p.streamUrl)
+      preferred
+      || sorted.find((p) => p.available !== false && p.streamUrl)
       || sorted.find((p) => p.available !== false)
       || null;
 
@@ -1229,6 +1300,11 @@ async function resolvePageUrl() {
         state.selectedPlayer = data.players.find((p) => p.index === idx);
         playerPicker.querySelectorAll('.player-pick').forEach((b) => b.classList.remove('is-active'));
         btn.classList.add('is-active');
+        saveWatchSession({
+          url,
+          playerIndex: idx,
+          active: !playerSection.classList.contains('hidden'),
+        });
         if (!playerSection.classList.contains('hidden')) {
           startUrlPlayer();
         }
@@ -1256,6 +1332,9 @@ async function resolvePageUrl() {
       );
     }
     updateStartUrlButton();
+    if (autoStart && state.selectedPlayer) {
+      await startUrlPlayer();
+    }
   } catch (err) {
     state.resolved = null;
     resolvedInfo.classList.add('hidden');
@@ -1406,6 +1485,11 @@ async function startUrlPlayer() {
   embedFrame.removeAttribute('src');
   cleanupVideo();
   setupPlayerUI();
+  saveWatchSession({
+    url: pageUrl?.value?.trim(),
+    playerIndex: state.selectedPlayer.index,
+    active: true,
+  });
   const yId = state.resolved?.ylitronId;
   const baseTitle = state.resolved?.title || 'Просмотр';
   playerTitle.textContent = yId ? `${baseTitle} · Ylitron ${yId}` : baseTitle;
@@ -1619,6 +1703,7 @@ function resetSubtitleState() {
 
 function backToSetup() {
   maybeSaveWatchPosition(true);
+  clearWatchSession();
   closePlayerMenu();
   exitLearnFullscreen();
   video.pause();
