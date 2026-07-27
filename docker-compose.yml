@@ -10,6 +10,7 @@ services:
       - "8765:8765"
     volumes:
       - ollama_data:/root/.ollama
+      - vocab_data:/app/data
       - ./server.py:/app/server.py
       - ./app.js:/app/app.js
       - ./index.html:/app/index.html
@@ -20,8 +21,10 @@ services:
       SUBLEARN_OLLAMA_MODEL: qwen2.5:3b
       SUBLEARN_HOST: 0.0.0.0
       SUBLEARN_PORT: "8765"
+      SUBLEARN_DATA_DIR: /app/data
       OLLAMA_HOST: 127.0.0.1:11434
     restart: unless-stopped
 
 volumes:
   ollama_data:
+  vocab_data:

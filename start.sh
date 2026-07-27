@@ -9,11 +9,6 @@ echo "Жду http://127.0.0.1:8765 (первый запуск качает мо�
 for i in $(seq 1 600); do
   if curl -sf http://127.0.0.1:8765/ >/dev/null 2>&1; then
     echo "Готово: http://127.0.0.1:8765"
-    if command -v open >/dev/null 2>&1; then
-      open "http://127.0.0.1:8765" || true
-    elif command -v xdg-open >/dev/null 2>&1; then
-      xdg-open "http://127.0.0.1:8765" || true
-    fi
     echo "Логи: docker compose logs -f"
     exit 0
   fi

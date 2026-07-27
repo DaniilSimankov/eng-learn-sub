@@ -8,7 +8,10 @@ import json
 import os
 import re
 import socket
+import sqlite3
 import ssl
+import threading
+import time
 import urllib.error
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
@@ -17,6 +20,9 @@ from pathlib import Path
 from urllib.parse import parse_qs, quote, urljoin, urlparse, urlunparse
 
 ROOT = Path(__file__).resolve().parent
+DATA_DIR = Path(os.environ.get("SUBLEARN_DATA_DIR", str(ROOT / "data")))
+DB_PATH = DATA_DIR / "vocab.db"
+_db_lock = threading.RLock()
 USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
     "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
@@ -710,6 +716,149 @@ OLLAMA_URL = os.environ.get("SUBLEARN_OLLAMA_URL", "http://127.0.0.1:11434").rst
 OLLAMA_MODEL = os.environ.get("SUBLEARN_OLLAMA_MODEL", "qwen2.5:3b")
 
 
+def init_vocab_db() -> None:
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    with _db_lock:
+        conn = sqlite3.connect(DB_PATH)
+        try:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS vocabulary (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    word TEXT NOT NULL,
+                    translation TEXT NOT NULL,
+                    context TEXT NOT NULL DEFAULT '',
+                    saved_at INTEGER NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_vocab_word_ctx "
+                "ON vocabulary(word COLLATE NOCASE, context)"
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+
+def _db() -> sqlite3.Connection:
+    conn = sqlite3.connect(DB_PATH, timeout=30)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def _row_to_item(row: sqlite3.Row) -> dict:
+    return {
+        "id": row["id"],
+        "word": row["word"],
+        "translation": row["translation"],
+        "context": row["context"] or "",
+        "savedAt": row["saved_at"],
+    }
+
+
+def vocab_list() -> list:
+    with _db_lock:
+        conn = _db()
+        try:
+            rows = conn.execute(
+                "SELECT id, word, translation, context, saved_at "
+                "FROM vocabulary ORDER BY saved_at DESC, id DESC"
+            ).fetchall()
+            return [_row_to_item(r) for r in rows]
+        finally:
+            conn.close()
+
+
+def vocab_add(
+    word: str,
+    translation: str,
+    context: str = "",
+    *,
+    saved_at: Optional[int] = None,
+) -> dict:
+    word = (word or "").strip()
+    translation = (translation or "").strip()
+    context = (context or "").strip()
+    if not word or not translation:
+        raise ValueError("Нужны word и translation")
+    ts = int(saved_at) if saved_at is not None else int(time.time() * 1000)
+    with _db_lock:
+        conn = _db()
+        try:
+            existing = conn.execute(
+                "SELECT id FROM vocabulary "
+                "WHERE lower(word)=lower(?) AND context=? LIMIT 1",
+                (word, context),
+            ).fetchone()
+            if existing:
+                conn.execute(
+                    "UPDATE vocabulary SET translation=?, saved_at=? WHERE id=?",
+                    (translation, ts, existing["id"]),
+                )
+                conn.commit()
+                row = conn.execute(
+                    "SELECT id, word, translation, context, saved_at "
+                    "FROM vocabulary WHERE id=?",
+                    (existing["id"],),
+                ).fetchone()
+                return _row_to_item(row)
+            cur = conn.execute(
+                "INSERT INTO vocabulary (word, translation, context, saved_at) "
+                "VALUES (?, ?, ?, ?)",
+                (word, translation, context, ts),
+            )
+            conn.commit()
+            row = conn.execute(
+                "SELECT id, word, translation, context, saved_at "
+                "FROM vocabulary WHERE id=?",
+                (cur.lastrowid,),
+            ).fetchone()
+            return _row_to_item(row)
+        finally:
+            conn.close()
+
+
+def vocab_import_many(items: list) -> int:
+    imported = 0
+    for raw in items:
+        if not isinstance(raw, dict):
+            continue
+        word = str(raw.get("word") or "").strip()
+        translation = str(raw.get("translation") or "").strip()
+        if not word or not translation:
+            continue
+        context = str(raw.get("context") or "").strip()
+        saved_at = raw.get("savedAt")
+        try:
+            vocab_add(word, translation, context, saved_at=saved_at)
+            imported += 1
+        except ValueError:
+            continue
+    return imported
+
+
+def vocab_delete(item_id: int) -> bool:
+    with _db_lock:
+        conn = _db()
+        try:
+            cur = conn.execute("DELETE FROM vocabulary WHERE id=?", (item_id,))
+            conn.commit()
+            return cur.rowcount > 0
+        finally:
+            conn.close()
+
+
+def vocab_clear() -> None:
+    with _db_lock:
+        conn = _db()
+        try:
+            conn.execute("DELETE FROM vocabulary")
+            conn.commit()
+        finally:
+            conn.close()
+
+
 def _ollama_request(path: str, payload: Optional[dict] = None, timeout: int = 60):
     url = f"{OLLAMA_URL}{path}"
     data = None
@@ -1050,6 +1199,12 @@ class SubLearnHandler(SimpleHTTPRequestHandler):
         if parsed.path == "/api/ai-status":
             self._json_response(200, ollama_status())
             return
+        if parsed.path == "/api/vocab":
+            try:
+                self._json_response(200, {"items": vocab_list()})
+            except Exception as exc:  # noqa: BLE001
+                self._json_response(500, {"error": str(exc)})
+            return
         if parsed.path == "/api/translate":
             params = parse_qs(parsed.query)
             text = (params.get("text") or [""])[0].strip()
@@ -1089,6 +1244,74 @@ class SubLearnHandler(SimpleHTTPRequestHandler):
             return
         super().do_GET()
 
+    def do_POST(self):
+        parsed = urlparse(self.path)
+        if parsed.path == "/api/vocab":
+            try:
+                payload = self._read_json_body()
+                word = str(payload.get("word") or "").strip()
+                translation = str(payload.get("translation") or "").strip()
+                context = str(payload.get("context") or "").strip()
+                saved_at = payload.get("savedAt")
+                if not word or not translation:
+                    self._json_response(400, {"error": "Нужны word и translation"})
+                    return
+                item = vocab_add(word, translation, context, saved_at=saved_at)
+                self._json_response(200, {"item": item})
+            except ValueError as exc:
+                self._json_response(400, {"error": str(exc)})
+            except Exception as exc:  # noqa: BLE001
+                self._json_response(500, {"error": str(exc)})
+            return
+        if parsed.path == "/api/vocab/import":
+            try:
+                payload = self._read_json_body()
+                items = payload.get("items") or []
+                if not isinstance(items, list):
+                    self._json_response(400, {"error": "items должен быть массивом"})
+                    return
+                imported = vocab_import_many(items)
+                self._json_response(200, {"imported": imported, "items": vocab_list()})
+            except Exception as exc:  # noqa: BLE001
+                self._json_response(500, {"error": str(exc)})
+            return
+        self._json_response(404, {"error": "Not found"})
+
+    def do_DELETE(self):
+        parsed = urlparse(self.path)
+        if parsed.path == "/api/vocab":
+            params = parse_qs(parsed.query)
+            try:
+                if "id" in params:
+                    vid = int((params.get("id") or ["0"])[0])
+                    ok = vocab_delete(vid)
+                    if not ok:
+                        self._json_response(404, {"error": "Не найдено"})
+                        return
+                    self._json_response(200, {"ok": True})
+                    return
+                # без id — очистить весь словарь
+                vocab_clear()
+                self._json_response(200, {"ok": True})
+            except ValueError:
+                self._json_response(400, {"error": "Некорректный id"})
+            except Exception as exc:  # noqa: BLE001
+                self._json_response(500, {"error": str(exc)})
+            return
+        self._json_response(404, {"error": "Not found"})
+
+    def _read_json_body(self) -> dict:
+        length = int(self.headers.get("Content-Length") or 0)
+        if length <= 0:
+            return {}
+        if length > 2_000_000:
+            raise ValueError("Слишком большое тело запроса")
+        raw = self.rfile.read(length)
+        data = json.loads(raw.decode("utf-8"))
+        if not isinstance(data, dict):
+            raise ValueError("Ожидался JSON-объект")
+        return data
+
     def _text_response(self, code: int, text: str, content_type: str):
         body = text.encode("utf-8")
         self.send_response(code)
@@ -1109,9 +1332,11 @@ class SubLearnHandler(SimpleHTTPRequestHandler):
 def main():
     host = os.environ.get("SUBLEARN_HOST", "127.0.0.1")
     port = int(os.environ.get("SUBLEARN_PORT", "8765"))
+    init_vocab_db()
     server = ThreadingHTTPServer((host, port), SubLearnHandler)
     print(f"SubLearn: http://127.0.0.1:{port}")
     print(f"AI: Ollama {OLLAMA_URL} model={OLLAMA_MODEL}")
+    print(f"Vocab DB: {DB_PATH}")
     print("Остановка: Ctrl+C")
     server.serve_forever()
 

@@ -46,7 +46,7 @@ const state = {
   ignorePopupHideUntil: 0,
   preferredVoiceURI: null,
   translationCache: new Map(),
-  vocabulary: loadVocabulary(),
+  vocabulary: [],
   resolved: null,
   selectedPlayer: null,
   hls: null,
@@ -986,7 +986,7 @@ initPlayerChrome();
 video.addEventListener('timeupdate', onTimeUpdate);
 video.addEventListener('seeked', onTimeUpdate);
 
-renderVocabulary();
+initVocabulary();
 updateStartButton();
 updateStartUrlButton();
 applySubsPosition(loadSubsPosition());
@@ -2070,7 +2070,7 @@ function speakPopupWord() {
   speechSynthesis.speak(utter);
 }
 
-function loadVocabulary() {
+function loadLocalVocabularyBackup() {
   try {
     return JSON.parse(localStorage.getItem(STORAGE_KEY) || '[]');
   } catch {
@@ -2078,12 +2078,44 @@ function loadVocabulary() {
   }
 }
 
-function saveVocabulary() {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(state.vocabulary));
+async function fetchVocabulary() {
+  const res = await fetch('/api/vocab');
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || 'Не удалось загрузить словарь');
+  return Array.isArray(data.items) ? data.items : [];
+}
+
+async function migrateLocalVocabularyIfNeeded() {
+  const localItems = loadLocalVocabularyBackup();
+  if (!localItems.length) return;
+  try {
+    const res = await fetch('/api/vocab/import', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ items: localItems }),
+    });
+    if (!res.ok) return;
+    localStorage.removeItem(STORAGE_KEY);
+  } catch {
+    /* сервер ещё не готов — оставим localStorage */
+  }
+}
+
+async function refreshVocabulary() {
+  try {
+    state.vocabulary = await fetchVocabulary();
+  } catch {
+    state.vocabulary = loadLocalVocabularyBackup();
+  }
   renderVocabulary();
 }
 
-function saveFromPopup() {
+async function initVocabulary() {
+  await migrateLocalVocabularyIfNeeded();
+  await refreshVocabulary();
+}
+
+async function saveFromPopup() {
   if (!state.lastPopupWord || !state.onlineTranslation) return;
   const { word, sentence } = state.lastPopupWord;
   const ru = popupTranslation.textContent;
@@ -2091,12 +2123,36 @@ function saveFromPopup() {
   const note = popupTranslationNote?.textContent?.trim();
   const stored = note ? `${ru}\n${note}` : ru;
 
-  const exists = state.vocabulary.some(
-    (v) => v.word.toLowerCase() === word.toLowerCase() && v.context === sentence
-  );
-  if (!exists) {
-    state.vocabulary.unshift({ word, translation: stored, context: sentence, savedAt: Date.now() });
-    saveVocabulary();
+  try {
+    const res = await fetch('/api/vocab', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        word,
+        translation: stored,
+        context: sentence || '',
+        savedAt: Date.now(),
+      }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Не удалось сохранить');
+    await refreshVocabulary();
+  } catch (err) {
+    // fallback: локально, если API недоступен
+    const exists = state.vocabulary.some(
+      (v) => v.word.toLowerCase() === word.toLowerCase() && v.context === sentence
+    );
+    if (!exists) {
+      state.vocabulary.unshift({
+        word,
+        translation: stored,
+        context: sentence,
+        savedAt: Date.now(),
+      });
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(state.vocabulary));
+      renderVocabulary();
+    }
+    console.warn(err);
   }
   hidePopup();
 }
@@ -2109,7 +2165,7 @@ function renderVocabulary() {
     return;
   }
   vocabEmpty.classList.add('hidden');
-  state.vocabulary.forEach((item, i) => {
+  state.vocabulary.forEach((item) => {
     const li = document.createElement('li');
     const { main, note } = splitTranslationNote(item.translation || '');
     li.innerHTML = `
@@ -2119,19 +2175,51 @@ function renderVocabulary() {
         ${note ? `<div class="ctx">${escapeHtml(note)}</div>` : ''}
         ${item.context ? `<div class="ctx">${escapeHtml(item.context)}</div>` : ''}
       </div>
-      <button type="button" aria-label="Удалить" data-idx="${i}">×</button>`;
+      <button type="button" aria-label="Удалить" data-id="${item.id ?? ''}">×</button>`;
     li.querySelector('button').addEventListener('click', () => {
-      state.vocabulary.splice(i, 1);
-      saveVocabulary();
+      deleteVocabularyItem(item);
     });
     vocabList.appendChild(li);
   });
 }
 
-function clearVocabulary() {
+async function deleteVocabularyItem(item) {
+  if (item?.id != null) {
+    try {
+      const res = await fetch(`/api/vocab?id=${encodeURIComponent(item.id)}`, {
+        method: 'DELETE',
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error || 'Ошибка удаления');
+      }
+      await refreshVocabulary();
+      return;
+    } catch (err) {
+      console.warn(err);
+    }
+  }
+  state.vocabulary = state.vocabulary.filter((v) => v !== item);
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(state.vocabulary));
+  renderVocabulary();
+}
+
+async function clearVocabulary() {
   if (!confirm('Очистить весь словарь?')) return;
-  state.vocabulary = [];
-  saveVocabulary();
+  try {
+    const res = await fetch('/api/vocab', { method: 'DELETE' });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      throw new Error(data.error || 'Ошибка очистки');
+    }
+    localStorage.removeItem(STORAGE_KEY);
+    await refreshVocabulary();
+  } catch (err) {
+    state.vocabulary = [];
+    localStorage.removeItem(STORAGE_KEY);
+    renderVocabulary();
+    console.warn(err);
+  }
 }
 
 function exportVocabulary() {
