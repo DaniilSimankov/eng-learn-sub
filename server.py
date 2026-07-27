@@ -26,6 +26,7 @@ DB_PATH = DATA_DIR / "vocab.db"
 _db_lock = threading.RLock()
 _dns_lock = threading.Lock()
 _translate_cache_lock = threading.Lock()
+_ollama_lock = threading.Lock()
 _dns_cache: dict[str, tuple[float, list[str]]] = {}
 _DNS_TTL_SEC = 600
 _SSL_CONTEXT = ssl.create_default_context()
@@ -1247,7 +1248,8 @@ def _chat_translate(
         "messages": messages,
     }
     try:
-        data = _ollama_request("/api/chat", payload, timeout=90)
+        with _ollama_lock:
+            data = _ollama_request("/api/chat", payload, timeout=90)
     except urllib.error.HTTPError as exc:
         body = exc.read().decode("utf-8", errors="replace")
         raise RuntimeError(f"Ollama HTTP {exc.code}: {body[:200]}") from exc

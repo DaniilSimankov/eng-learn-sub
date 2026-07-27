@@ -1798,26 +1798,19 @@ function scheduleInlineTranslation(text, cueIndex) {
         subtitleTranslation.classList.remove('hidden');
       }
     });
-    prefetchNeighborTranslations(cueIndex);
     return;
   }
+  // Пока играет видео — дольше ждём, чтобы Ollama не отбирала CPU у декодера/HLS.
+  const delay = state.playbackMode === 'video' && !video.paused ? 500 : 200;
   inlineTranslateTimer = setTimeout(() => {
+    if (state.currentCueIndex !== cueIndex || !showRuInline.checked) return;
     translateText(text).then((ru) => {
       if (state.currentCueIndex === cueIndex && showRuInline.checked) {
         subtitleTranslation.textContent = ru;
         subtitleTranslation.classList.remove('hidden');
       }
     });
-    prefetchNeighborTranslations(cueIndex);
-  }, 350);
-}
-
-function prefetchNeighborTranslations(cueIndex) {
-  if (!showRuInline.checked || !state.onlineTranslation) return;
-  for (const offset of [1, -1]) {
-    const neighbor = state.cues[cueIndex + offset];
-    if (neighbor?.text) translateText(neighbor.text).catch(() => {});
-  }
+  }, delay);
 }
 
 function tokenizeToHtml(text) {
