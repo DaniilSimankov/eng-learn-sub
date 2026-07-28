@@ -414,6 +414,7 @@ pageUrl.addEventListener('keydown', (e) => {
 });
 
 $('#btn-back-setup').addEventListener('click', backToSetup);
+$('#btn-back-home')?.addEventListener('click', backToSetup);
 $('#btn-learn-fs')?.addEventListener('click', toggleLearnFullscreen);
 $('#btn-exit-fs')?.addEventListener('click', exitLearnFullscreen);
 document.addEventListener('fullscreenchange', syncLearnFullscreenUI);
@@ -1576,7 +1577,11 @@ async function startUrlPlayer() {
   });
   const yId = state.resolved?.ylitronId;
   const baseTitle = state.resolved?.title || 'Просмотр';
-  playerTitle.textContent = yId ? `${baseTitle} · Ylitron ${yId}` : baseTitle;
+  if (yId) {
+    playerTitle.innerHTML = `${escapeHtml(baseTitle)} <span class="player-title__ylitron">· Ylitron ${escapeHtml(String(yId))}</span>`;
+  } else {
+    playerTitle.textContent = baseTitle;
+  }
 
   const { iframeUrl, streamUrl, subtitleUrl, available } = state.selectedPlayer;
 
