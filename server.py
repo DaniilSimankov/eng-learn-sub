@@ -64,9 +64,19 @@ VTT_RE = re.compile(
     re.IGNORECASE,
 )
 VTT_EN_RE = re.compile(r"(?:^|[/_\-.])(en|eng|english)(?:[._\-.]|$)", re.IGNORECASE)
+LOMONT_CONFIG_RE = re.compile(r"""data-config=(['"])(.*?)\1""", re.IGNORECASE | re.DOTALL)
+LOMONT_INPUT_DATA_RE = re.compile(
+    r"""<div[^>]+id=(['"])inputData\1[^>]*>(.*?)</div>""",
+    re.IGNORECASE | re.DOTALL,
+)
+LOMONT_SUBTITLE_ATTR_RE = re.compile(
+    r"""data-([a-z]{2})_subtitle=(['"])(.*?)\2""",
+    re.IGNORECASE,
+)
 EMBED_HOSTS = (
     "cdnlbox.club",
     "ylitron.pro",
+    "lomont.site",
     "ortified.ws",
     "vak345.com",
     "interkh.com",
@@ -875,6 +885,11 @@ def parse_ylitron_assets(embed_html: str) -> Optional[dict]:
 
 
 def parse_embed_assets(embed_html: str, iframe_url: str = "") -> dict:
+    if "lomont.site" in (iframe_url or "").lower():
+        lomont = parse_lomont_assets(embed_html, iframe_url)
+        if lomont:
+            return lomont
+
     if "ylitron" in (iframe_url or "").lower():
         ylitron = parse_ylitron_assets(embed_html)
         if ylitron:
@@ -899,6 +914,115 @@ def parse_embed_assets(embed_html: str, iframe_url: str = "") -> dict:
         "streamUrl": find_stream_in_html(embed_html),
         "subtitleUrl": pick_subtitle_url(find_vtt_urls(embed_html)),
         "subtitleTracks": [],
+        "audioTrackNames": [],
+    }
+
+
+def _safe_media_url(url: str) -> Optional[str]:
+    if not url:
+        return None
+    try:
+        validate_media_url(url)
+        return url
+    except SecurityError:
+        return None
+
+
+def _parse_lomont_data_config(embed_html: str) -> Optional[str]:
+    match = LOMONT_CONFIG_RE.search(embed_html)
+    if not match:
+        return None
+    raw = html.unescape(match.group(2) or "").strip()
+    if not raw:
+        return None
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        return None
+    return _safe_media_url(data.get("hls") or "")
+
+
+def _parse_lomont_subtitle_attrs(embed_html: str) -> list[dict]:
+    tracks = []
+    seen = set()
+    labels = {"en": "Eng. subtitle", "ru": "Рус. subtitle"}
+    for lang, _, raw_url in LOMONT_SUBTITLE_ATTR_RE.findall(embed_html):
+        url = _safe_media_url(html.unescape((raw_url or "").strip()))
+        if not url or url in seen:
+            continue
+        seen.add(url)
+        lang = (lang or "").lower()
+        tracks.append({"url": url, "name": labels.get(lang, f"{lang.upper()} subtitle")})
+    return tracks
+
+
+def _parse_lomont_input_data(embed_html: str, season: int, episode: int) -> list[dict]:
+    match = LOMONT_INPUT_DATA_RE.search(embed_html)
+    if not match:
+        return []
+    raw = html.unescape((match.group(2) or "").strip())
+    if not raw:
+        return []
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        return []
+
+    season_obj = data.get(str(season)) if isinstance(data, dict) else None
+    episode_list = season_obj.get(str(episode)) if isinstance(season_obj, dict) else None
+    if not isinstance(episode_list, list):
+        return []
+
+    tracks = []
+    seen = set()
+    for item in episode_list:
+        if not isinstance(item, dict):
+            continue
+        voice_name = str(item.get("voice_name") or "")
+        if int(item.get("voice_id") or 0) != 2 and "субтит" not in voice_name.lower():
+            continue
+        video_id = item.get("video_id")
+        if not video_id:
+            continue
+        for lang, label in (("en", "Eng. subtitle"), ("ru", "Рус. subtitle")):
+            url = _safe_media_url(f"https://lomont.site/player/subtitle/{lang}_{video_id}.vtt")
+            if not url or url in seen:
+                continue
+            seen.add(url)
+            tracks.append({"url": url, "name": label})
+    return tracks
+
+
+def parse_lomont_assets(embed_html: str, iframe_url: str = "") -> Optional[dict]:
+    stream_url = _parse_lomont_data_config(embed_html) or find_stream_in_html(embed_html)
+    stream_url = _safe_media_url(stream_url or "")
+    if not stream_url:
+        return None
+
+    season, episode = parse_season_episode(iframe_url)
+    tracks = _parse_lomont_subtitle_attrs(embed_html)
+    fallback_tracks = _parse_lomont_input_data(embed_html, season, episode)
+    seen = {track["url"] for track in tracks}
+    for track in fallback_tracks:
+        if track["url"] not in seen:
+            seen.add(track["url"])
+            tracks.append(track)
+
+    if not tracks:
+        tracks = [{"url": url, "name": "Subtitle"} for url in find_vtt_urls(embed_html) if _safe_media_url(url)]
+
+    subtitle_url = None
+    for track in tracks:
+        if track["name"].lower().startswith("eng"):
+            subtitle_url = track["url"]
+            break
+    if not subtitle_url and tracks:
+        subtitle_url = tracks[0]["url"]
+
+    return {
+        "streamUrl": stream_url,
+        "subtitleUrl": subtitle_url,
+        "subtitleTracks": tracks,
         "audioTrackNames": [],
     }
 
