@@ -1158,8 +1158,83 @@ body {
 .popup.is-compact .popup__resize,
 .popup.is-compact .translation-provider,
 .popup.is-compact .translation-ai,
+.popup.is-compact .popup__ai-tier,
 .popup.is-compact .translation-retry {
   display: none !important;
+}
+
+.popup__ai-tier {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin: 0;
+  padding: 0.4rem 0.65rem;
+  font-size: 0.85rem;
+  color: var(--text-muted);
+  user-select: none;
+  white-space: nowrap;
+  line-height: 1;
+}
+
+.popup__ai-tier-text {
+  line-height: 1;
+}
+
+.popup__ai-tier-track {
+  position: relative;
+  flex-shrink: 0;
+  width: 1.85rem;
+  height: 1rem;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+
+.popup__ai-tier-input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  opacity: 0;
+  cursor: pointer;
+  z-index: 1;
+}
+
+.popup__ai-tier-thumb {
+  position: absolute;
+  top: 1px;
+  left: 1px;
+  width: calc(1rem - 4px);
+  height: calc(1rem - 4px);
+  background: var(--text-muted);
+  border-radius: 50%;
+  transition: transform 0.15s ease, background 0.15s ease;
+  pointer-events: none;
+}
+
+.popup__ai-tier.is-on {
+  color: var(--text);
+}
+
+.popup__ai-tier.is-on .popup__ai-tier-track {
+  background: rgba(108, 140, 255, 0.14);
+  border-color: rgba(108, 140, 255, 0.45);
+}
+
+.popup__ai-tier.is-on .popup__ai-tier-thumb {
+  transform: translateX(0.82rem);
+  background: #c5d0ff;
+}
+
+.popup__ai-tier:has(.popup__ai-tier-input:disabled) {
+  opacity: 0.55;
+  cursor: wait;
+}
+
+.popup__ask-msg--ai.is-heavy {
+  border-left-color: rgba(108, 140, 255, 0.45);
 }
 
 .popup__save-compact {

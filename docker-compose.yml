@@ -1,13 +1,15 @@
 # SubLearn: два модуля
-#   ollama — модель (CPU в Docker VM; на Mac Metal см. ниже)
+#   ollama — модели (CPU в Docker VM; на Mac Metal см. ниже)
 #   web    — API, статика, HLS-прокси
+#
+# Две модели: лёгкая (кнопки «ИИ») + тяжёлая (эскалация). В RAM одна за раз, ~3 ГБ.
 #
 # Запуск:  ./start.sh   или   docker compose up -d --build
 # Стоп:    docker compose down
 # Логи:    docker compose logs -f web ollama
 # Чистка моделей: docker compose down -v
 #
-# Опционально быстрее на Mac (Metal): поставьте Ollama.app, pull qwen3:4b,
+# Опционально быстрее на Mac (Metal): поставьте Ollama.app, pull qwen3:1.7b и qwen3:4b,
 # затем поднимите только web:
 #   docker compose up -d --build web
 #   # и в environment web:
@@ -25,12 +27,10 @@ services:
       OLLAMA_KEEP_ALIVE: "3m"
       OLLAMA_MAX_LOADED_MODELS: "1"
       OLLAMA_NUM_PARALLEL: "1"
-    # Не публикуем 11434 на хост по умолчанию — только внутренняя сеть compose.
     expose:
       - "11434"
-    # ИИ только по кнопке; 4B холодная — Google основной путь.
     cpus: "2.0"
-    mem_limit: 4g
+    mem_limit: 3g
     healthcheck:
       test: ["CMD-SHELL", "ollama list >/dev/null 2>&1 || exit 1"]
       interval: 5s
@@ -58,14 +58,13 @@ services:
       - ./entrypoint.sh:/entrypoint.sh
     environment:
       SUBLEARN_OLLAMA_URL: http://ollama:11434
-      # 4B — баланс скорость/качество; клики идут через Google.
       SUBLEARN_OLLAMA_MODEL: qwen3:4b
+      SUBLEARN_OLLAMA_MODEL_LIGHT: qwen3:1.7b
       SUBLEARN_OLLAMA_NUM_THREAD: "2"
       SUBLEARN_HOST: 0.0.0.0
       SUBLEARN_PORT: "8765"
       SUBLEARN_DATA_DIR: /app/data
       SUBLEARN_NEWDEAF_DNS: cloudflare
-      # Тёплый idle 3м после AI/prefetch; Google — основной путь перевода.
       OLLAMA_KEEP_ALIVE: "3m"
     depends_on:
       ollama:
