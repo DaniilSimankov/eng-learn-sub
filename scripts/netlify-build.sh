@@ -8,7 +8,7 @@ OUT="$ROOT/public"
 rm -rf "$OUT"
 mkdir -p "$OUT/frontend/utils" "$OUT/frontend/subtitles" "$OUT/frontend/api" "$OUT/sample"
 
-cp "$ROOT/index.html" "$ROOT/app.js" "$ROOT/styles.css" "$ROOT/ad-skip.js" "$OUT/"
+cp "$ROOT/index.html" "$ROOT/app.js" "$ROOT/styles.css" "$ROOT/ad-skip.js" "$ROOT/favicon.svg" "$OUT/"
 cp "$ROOT/frontend/utils/storage.js" "$OUT/frontend/utils/"
 cp "$ROOT/frontend/subtitles/parser.js" "$OUT/frontend/subtitles/"
 cp "$ROOT/frontend/api/client.js" "$OUT/frontend/api/"

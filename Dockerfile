@@ -7,7 +7,7 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
-COPY server.py ad-skip.js index.html app.js styles.css ./
+COPY server.py ad-skip.js index.html app.js styles.css favicon.svg ./
 COPY backend ./backend
 COPY frontend ./frontend
 COPY entrypoint.sh /entrypoint.sh
