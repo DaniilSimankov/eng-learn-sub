@@ -38,6 +38,7 @@ const SUBS_WIDTH_MIN_PCT = 18;
 const SUBS_WIDTH_MAX_PCT = 92;
 const storage = window.SubLearnStorage;
 const subtitleParser = window.SubLearnSubtitleParser;
+const api = window.SubLearnApi;
 
 function loadSeekStep() {
   const n = Number(storage?.safeGet(SEEK_STEP_KEY, ''));
@@ -493,9 +494,7 @@ qualityTrackSelect?.addEventListener('change', () => {
   const val = Number(qualityTrackSelect.value);
   if (Number.isNaN(val)) return;
   state.hls.currentLevel = val;
-  try {
-    localStorage.setItem(QUALITY_LEVEL_KEY, String(val));
-  } catch { /* ignore */ }
+  storage?.safeSet(QUALITY_LEVEL_KEY, String(val));
   renderQualityUI();
 });
 
@@ -504,18 +503,12 @@ showRuInline.addEventListener('change', () => {
 });
 
 function loadOnlineTranslationPref() {
-  try {
-    return localStorage.getItem(ONLINE_TRANSLATION_KEY) === '1';
-  } catch {
-    return false;
-  }
+  return storage?.safeGet(ONLINE_TRANSLATION_KEY, '0') === '1';
 }
 
 function saveOnlineTranslationPref(value) {
   state.onlineTranslation = value;
-  try {
-    localStorage.setItem(ONLINE_TRANSLATION_KEY, value ? '1' : '0');
-  } catch { /* ignore */ }
+  storage?.safeSet(ONLINE_TRANSLATION_KEY, value ? '1' : '0');
   if (onlineTranslationSetup) onlineTranslationSetup.checked = value;
 }
 
@@ -534,8 +527,7 @@ let warmAiInFlight = false;
 async function refreshAiStatus() {
   if (!aiStatusEl) return;
   try {
-    const res = await fetch('/api/ai-status');
-    const data = await res.json();
+    const data = await api.aiStatus();
     aiStatusEl.classList.remove('is-ok', 'is-warn', 'is-err');
     state.aiReady = Boolean(data.ok && data.ready);
     state.aiLoaded = Boolean(data.ok && data.ready && data.loaded);
@@ -580,8 +572,7 @@ function warmAiModel() {
     if (typeof isVideoActivelyPlaying === 'function' && isVideoActivelyPlaying()) return;
     warmAiInFlight = true;
     try {
-      const res = await fetch('/api/ai-warm', { method: 'POST' });
-      const data = await res.json().catch(() => ({}));
+      const data = await api.aiWarm();
       if (data.ok && data.loaded) {
         state.aiLoaded = true;
         if (aiStatusEl && state.aiReady) {
@@ -598,19 +589,13 @@ function warmAiModel() {
 }
 
 function loadPreferredAudioLang() {
-  try {
-    return localStorage.getItem(AUDIO_LANG_KEY) || 'en';
-  } catch {
-    return 'en';
-  }
+  return storage?.safeGet(AUDIO_LANG_KEY, 'en') || 'en';
 }
 
 function savePreferredAudioLang(lang) {
   const code = (lang || 'en').toLowerCase().slice(0, 2);
   state.preferredAudioLang = code;
-  try {
-    localStorage.setItem(AUDIO_LANG_KEY, code);
-  } catch { /* ignore */ }
+  storage?.safeSet(AUDIO_LANG_KEY, code);
 }
 
 function formatAudioTrackLabel(track, index = 0) {
@@ -846,14 +831,10 @@ function hideQualityUI() {
 }
 
 function loadQualityPref() {
-  try {
-    const val = localStorage.getItem(QUALITY_LEVEL_KEY);
-    if (val === null || val === '-1') return -1;
-    const num = Number(val);
-    return Number.isNaN(num) ? -1 : num;
-  } catch {
-    return -1;
-  }
+  const val = storage?.safeGet(QUALITY_LEVEL_KEY, null);
+  if (val === null || val === '-1') return -1;
+  const num = Number(val);
+  return Number.isNaN(num) ? -1 : num;
 }
 
 function applyQualityPreference() {
@@ -934,18 +915,12 @@ async function setupSubtitleTracks() {
 }
 
 function loadSkipAdsPref() {
-  try {
-    return localStorage.getItem(SKIP_ADS_KEY) !== '0';
-  } catch {
-    return true;
-  }
+  return storage?.safeGet(SKIP_ADS_KEY, '1') !== '0';
 }
 
 function saveSkipAdsPref(value) {
   state.skipAds = value;
-  try {
-    localStorage.setItem(SKIP_ADS_KEY, value ? '1' : '0');
-  } catch { /* ignore */ }
+  storage?.safeSet(SKIP_ADS_KEY, value ? '1' : '0');
   if (skipAdsSetup) skipAdsSetup.checked = value;
   if (skipAdsLive) skipAdsLive.checked = value;
 }
@@ -1568,12 +1543,8 @@ async function runCatalogSearch() {
   renderSearchResults([]);
 
   try {
-    const params = new URLSearchParams({ q, limit: '15' });
     const type = searchType.value.trim();
-    if (type) params.set('type', type);
-    const res = await fetch(`/api/search?${params}`);
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error || 'Ошибка поиска');
+    const data = await api.searchCatalog({ q, type, limit: 15 });
 
     const shown = data.results?.length || 0;
     const total = data.total ?? shown;
@@ -1651,9 +1622,7 @@ async function resolvePageUrl(options = {}) {
   btnResolve.disabled = true;
 
   try {
-    const res = await fetch(`/api/resolve?url=${encodeURIComponent(url)}`);
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error || 'Ошибка загрузки');
+    const data = await api.resolvePage(url);
 
     state.resolved = data;
     const sorted = [...data.players].sort((a, b) => {
@@ -2000,9 +1969,7 @@ async function startUrlPlayer() {
 
 async function loadAutoSubtitles(subtitleUrl) {
   try {
-    const res = await fetch(`/api/subtitles?url=${encodeURIComponent(subtitleUrl)}`);
-    if (!res.ok) return false;
-    const text = await res.text();
+    const text = await api.loadSubtitles(subtitleUrl);
     state.cues = parseSubtitles(text, 'auto.vtt');
     return state.cues.length > 0;
   } catch {
@@ -2155,20 +2122,13 @@ function isLearnFullscreen() {
 }
 
 function loadLearnPanelHeight() {
-  try {
-    const raw = localStorage.getItem(LEARN_PANEL_H_KEY);
-    const n = Number(raw);
-    if (!Number.isFinite(n)) return LEARN_PANEL_H_DEFAULT;
-    return Math.round(Math.min(Math.max(n, LEARN_PANEL_H_MIN), 900));
-  } catch {
-    return LEARN_PANEL_H_DEFAULT;
-  }
+  const n = Number(storage?.safeGet(LEARN_PANEL_H_KEY, ''));
+  if (!Number.isFinite(n)) return LEARN_PANEL_H_DEFAULT;
+  return Math.round(Math.min(Math.max(n, LEARN_PANEL_H_MIN), 900));
 }
 
 function saveLearnPanelHeight(px) {
-  try {
-    localStorage.setItem(LEARN_PANEL_H_KEY, String(Math.round(px)));
-  } catch { /* ignore */ }
+  storage?.safeSet(LEARN_PANEL_H_KEY, String(Math.round(px)));
 }
 
 function clampLearnPanelHeight(px) {
@@ -2723,32 +2683,22 @@ async function finishWordSelection(phrase, sentence, from, to) {
 }
 
 function loadPopupPos() {
-  try {
-    const raw = localStorage.getItem(POPUP_POS_KEY);
-    if (!raw) return null;
-    const data = JSON.parse(raw);
-    const left = Number(data?.left);
-    const top = Number(data?.top);
-    if (!Number.isFinite(left) || !Number.isFinite(top)) return null;
-    return { left, top };
-  } catch {
-    return null;
-  }
+  const data = storage?.safeGetJson(POPUP_POS_KEY, null);
+  const left = Number(data?.left);
+  const top = Number(data?.top);
+  if (!Number.isFinite(left) || !Number.isFinite(top)) return null;
+  return { left, top };
 }
 
 function savePopupPos(pos) {
-  try {
-    if (!pos || !Number.isFinite(pos.left) || !Number.isFinite(pos.top)) {
-      localStorage.removeItem(POPUP_POS_KEY);
-      state.popupPinnedPos = null;
-      return;
-    }
-    const next = { left: Math.round(pos.left), top: Math.round(pos.top) };
-    state.popupPinnedPos = next;
-    localStorage.setItem(POPUP_POS_KEY, JSON.stringify(next));
-  } catch {
-    state.popupPinnedPos = pos || null;
+  if (!pos || !Number.isFinite(pos.left) || !Number.isFinite(pos.top)) {
+    storage?.safeRemove(POPUP_POS_KEY);
+    state.popupPinnedPos = null;
+    return;
   }
+  const next = { left: Math.round(pos.left), top: Math.round(pos.top) };
+  state.popupPinnedPos = next;
+  if (!storage?.safeSetJson(POPUP_POS_KEY, next)) state.popupPinnedPos = pos || null;
 }
 
 function clearPopupPos() {
@@ -2756,41 +2706,25 @@ function clearPopupPos() {
 }
 
 function loadPopupAskOpen() {
-  try {
-    const raw = localStorage.getItem(POPUP_ASK_OPEN_KEY);
-    if (raw == null) return true;
-    return raw !== '0' && raw !== 'false';
-  } catch {
-    return true;
-  }
+  const raw = storage?.safeGet(POPUP_ASK_OPEN_KEY, null);
+  if (raw == null) return true;
+  return raw !== '0' && raw !== 'false';
 }
 
 function loadPopupMode() {
-  try {
-    const raw = localStorage.getItem(POPUP_MODE_KEY);
-    if (raw === 'compact' || raw === 'extended') return raw;
-    return 'extended';
-  } catch {
-    return 'extended';
-  }
+  const raw = storage?.safeGet(POPUP_MODE_KEY, 'extended');
+  if (raw === 'compact' || raw === 'extended') return raw;
+  return 'extended';
 }
 
 function savePopupMode(mode) {
   state.popupMode = mode === 'compact' ? 'compact' : 'extended';
-  try {
-    localStorage.setItem(POPUP_MODE_KEY, state.popupMode);
-  } catch {
-    /* ignore */
-  }
+  storage?.safeSet(POPUP_MODE_KEY, state.popupMode);
 }
 
 function savePopupAskOpen(open) {
   state.popupAskOpen = !!open;
-  try {
-    localStorage.setItem(POPUP_ASK_OPEN_KEY, open ? '1' : '0');
-  } catch {
-    /* ignore */
-  }
+  storage?.safeSet(POPUP_ASK_OPEN_KEY, open ? '1' : '0');
 }
 
 function popupSizeMins() {
@@ -2865,39 +2799,29 @@ function applyPopupMode(mode = state.popupMode, { reposition = false } = {}) {
 }
 
 function loadPopupSize() {
-  try {
-    const raw = localStorage.getItem(POPUP_SIZE_KEY);
-    if (!raw) return null;
-    const data = JSON.parse(raw);
-    const width = Number(data?.width);
-    const height = Number(data?.height);
-    if (!Number.isFinite(width) || width < POPUP_W_MIN_COLLAPSED) return null;
-    return {
-      width: Math.round(width),
-      height:
-        Number.isFinite(height) && height >= POPUP_H_MIN_COLLAPSED ? Math.round(height) : null,
-    };
-  } catch {
-    return null;
-  }
+  const data = storage?.safeGetJson(POPUP_SIZE_KEY, null);
+  const width = Number(data?.width);
+  const height = Number(data?.height);
+  if (!Number.isFinite(width) || width < POPUP_W_MIN_COLLAPSED) return null;
+  return {
+    width: Math.round(width),
+    height:
+      Number.isFinite(height) && height >= POPUP_H_MIN_COLLAPSED ? Math.round(height) : null,
+  };
 }
 
 function savePopupSize(size) {
-  try {
-    if (!size || !Number.isFinite(size.width)) {
-      localStorage.removeItem(POPUP_SIZE_KEY);
-      state.popupPinnedSize = null;
-      return;
-    }
-    const next = {
-      width: Math.round(size.width),
-      height: Number.isFinite(size.height) ? Math.round(size.height) : null,
-    };
-    state.popupPinnedSize = next;
-    localStorage.setItem(POPUP_SIZE_KEY, JSON.stringify(next));
-  } catch {
-    state.popupPinnedSize = size || null;
+  if (!size || !Number.isFinite(size.width)) {
+    storage?.safeRemove(POPUP_SIZE_KEY);
+    state.popupPinnedSize = null;
+    return;
   }
+  const next = {
+    width: Math.round(size.width),
+    height: Number.isFinite(size.height) ? Math.round(size.height) : null,
+  };
+  state.popupPinnedSize = next;
+  if (!storage?.safeSetJson(POPUP_SIZE_KEY, next)) state.popupPinnedSize = size || null;
 }
 
 function clearPopupSize() {
@@ -3288,18 +3212,12 @@ async function askPopupTutor(question) {
   if (popupAskSend) popupAskSend.disabled = true;
 
   try {
-    const res = await fetch('/api/explain', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        word: current.word,
-        sentence: current.sentence || '',
-        question: q,
-        translation: popupTranslation?.textContent || '',
-      }),
+    const data = await api.explain({
+      word: current.word,
+      sentence: current.sentence || '',
+      question: q,
+      translation: popupTranslation?.textContent || '',
     });
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error(data.error || 'Ошибка разбора');
     if (state.lastPopupWord?.word !== current.word) return;
     if (pending) {
       pending.textContent = data.answer || 'Пустой ответ';
@@ -3395,14 +3313,13 @@ function replayCurrentLine() {
 }
 
 async function fetchTranslation(text, { word = null, sentence = null, engine = 'google' } = {}) {
-  const params = new URLSearchParams();
-  if (text) params.set('text', text);
-  if (word) params.set('word', word);
-  if (sentence) params.set('sentence', sentence);
-  params.set('engine', engine);
-  let res;
   try {
-    res = await fetch(`/api/translate?${params.toString()}`);
+    const data = await api.translate({ text, word, sentence, engine });
+    return {
+      text: data.translation,
+      provider: data.provider || engine,
+      canRefine: Boolean(data.canRefine),
+    };
   } catch (err) {
     const msg = err?.message || 'Ошибка сети';
     if (/failed to fetch|networkerror|load failed/i.test(msg)) {
@@ -3410,18 +3327,6 @@ async function fetchTranslation(text, { word = null, sentence = null, engine = '
     }
     throw new Error(msg);
   }
-  let data;
-  try {
-    data = await res.json();
-  } catch {
-    throw new Error(res.ok ? 'Пустой ответ сервера' : `Ошибка сервера (${res.status})`);
-  }
-  if (!res.ok) throw new Error(data.error || 'Ошибка перевода');
-  return {
-    text: data.translation,
-    provider: data.provider || engine,
-    canRefine: Boolean(data.canRefine),
-  };
 }
 
 function translationFailure(message) {
@@ -3590,17 +3495,12 @@ function speakPopupWord() {
 }
 
 function loadLocalVocabularyBackup() {
-  try {
-    return JSON.parse(localStorage.getItem(STORAGE_KEY) || '[]');
-  } catch {
-    return [];
-  }
+  const data = storage?.safeGetJson(STORAGE_KEY, []);
+  return Array.isArray(data) ? data : [];
 }
 
 async function fetchVocabulary() {
-  const res = await fetch('/api/vocab');
-  const data = await res.json();
-  if (!res.ok) throw new Error(data.error || 'Не удалось загрузить словарь');
+  const data = await api.vocabList();
   return Array.isArray(data.items) ? data.items : [];
 }
 
@@ -3608,13 +3508,8 @@ async function migrateLocalVocabularyIfNeeded() {
   const localItems = loadLocalVocabularyBackup();
   if (!localItems.length) return;
   try {
-    const res = await fetch('/api/vocab/import', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ items: localItems }),
-    });
-    if (!res.ok) return;
-    localStorage.removeItem(STORAGE_KEY);
+    await api.vocabImport(localItems);
+    storage?.safeRemove(STORAGE_KEY);
   } catch {
     /* сервер ещё не готов — оставим localStorage */
   }
@@ -3644,18 +3539,12 @@ async function saveFromPopup() {
   const stored = note ? `${ru}\n${note}` : ru;
 
   try {
-    const res = await fetch('/api/vocab', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        word,
-        translation: stored,
-        context: sentence || '',
-        savedAt: Date.now(),
-      }),
+    await api.vocabAdd({
+      word,
+      translation: stored,
+      context: sentence || '',
+      savedAt: Date.now(),
     });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error || 'Не удалось сохранить');
     await refreshVocabulary();
   } catch (err) {
     // fallback: локально, если API недоступен
@@ -3669,7 +3558,7 @@ async function saveFromPopup() {
         context: sentence,
         savedAt: Date.now(),
       });
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(state.vocabulary));
+      storage?.safeSetJson(STORAGE_KEY, state.vocabulary);
       renderVocabulary();
     }
     console.warn(err);
@@ -3706,13 +3595,7 @@ function renderVocabulary() {
 async function deleteVocabularyItem(item) {
   if (item?.id != null) {
     try {
-      const res = await fetch(`/api/vocab?id=${encodeURIComponent(item.id)}`, {
-        method: 'DELETE',
-      });
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({}));
-        throw new Error(data.error || 'Ошибка удаления');
-      }
+      await api.vocabDelete(item.id);
       await refreshVocabulary();
       return;
     } catch (err) {
@@ -3720,23 +3603,19 @@ async function deleteVocabularyItem(item) {
     }
   }
   state.vocabulary = state.vocabulary.filter((v) => v !== item);
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(state.vocabulary));
+  storage?.safeSetJson(STORAGE_KEY, state.vocabulary);
   renderVocabulary();
 }
 
 async function clearVocabulary() {
   if (!confirm('Очистить весь словарь?')) return;
   try {
-    const res = await fetch('/api/vocab', { method: 'DELETE' });
-    if (!res.ok) {
-      const data = await res.json().catch(() => ({}));
-      throw new Error(data.error || 'Ошибка очистки');
-    }
-    localStorage.removeItem(STORAGE_KEY);
+    await api.vocabClear();
+    storage?.safeRemove(STORAGE_KEY);
     await refreshVocabulary();
   } catch (err) {
     state.vocabulary = [];
-    localStorage.removeItem(STORAGE_KEY);
+    storage?.safeRemove(STORAGE_KEY);
     renderVocabulary();
     console.warn(err);
   }
@@ -3758,22 +3637,17 @@ function formatTime(sec) {
 }
 
 function loadSubsScale() {
-  try {
-    const raw = localStorage.getItem(SUBS_SIZE_KEY);
-    const n = Number(raw);
-    if (!Number.isFinite(n)) return SUBS_SIZE_DEFAULT_PCT / 100;
-    // Поддержка старых пресетов (0.85–1.45) и процентов (50–200)
-    if (n >= 50 && n <= 200) return n / 100;
-    if (n >= 0.5 && n <= 2.5) return n;
-  } catch { /* ignore */ }
+  const n = Number(storage?.safeGet(SUBS_SIZE_KEY, ''));
+  if (!Number.isFinite(n)) return SUBS_SIZE_DEFAULT_PCT / 100;
+  // Поддержка старых пресетов (0.85–1.45) и процентов (50–200)
+  if (n >= 50 && n <= 200) return n / 100;
+  if (n >= 0.5 && n <= 2.5) return n;
   return SUBS_SIZE_DEFAULT_PCT / 100;
 }
 
 function saveSubsScale(scale) {
   state.subsScale = scale;
-  try {
-    localStorage.setItem(SUBS_SIZE_KEY, String(Math.round(scale * 100)));
-  } catch { /* ignore */ }
+  storage?.safeSet(SUBS_SIZE_KEY, String(Math.round(scale * 100)));
 }
 
 function applySubsScale(scale) {
@@ -3783,35 +3657,25 @@ function applySubsScale(scale) {
 }
 
 function loadSubsPosition() {
-  try {
-    const raw = localStorage.getItem(SUBS_POS_KEY);
-    if (!raw) return null;
-    const pos = JSON.parse(raw);
-    if (typeof pos?.x === 'number' && typeof pos?.y === 'number') return pos;
-  } catch { /* ignore */ }
+  const pos = storage?.safeGetJson(SUBS_POS_KEY, null);
+  if (typeof pos?.x === 'number' && typeof pos?.y === 'number') return pos;
   return null;
 }
 
 function saveSubsPosition(pos) {
-  try {
-    if (!pos) localStorage.removeItem(SUBS_POS_KEY);
-    else localStorage.setItem(SUBS_POS_KEY, JSON.stringify(pos));
-  } catch { /* ignore */ }
+  if (!pos) storage?.safeRemove(SUBS_POS_KEY);
+  else storage?.safeSetJson(SUBS_POS_KEY, pos);
 }
 
 function loadSubsWidth() {
-  try {
-    const n = Number(localStorage.getItem(SUBS_WIDTH_KEY));
-    if (Number.isFinite(n) && n >= SUBS_WIDTH_MIN_PCT && n <= SUBS_WIDTH_MAX_PCT) return n;
-  } catch { /* ignore */ }
+  const n = Number(storage?.safeGet(SUBS_WIDTH_KEY, ''));
+  if (Number.isFinite(n) && n >= SUBS_WIDTH_MIN_PCT && n <= SUBS_WIDTH_MAX_PCT) return n;
   return null;
 }
 
 function saveSubsWidth(widthPct) {
-  try {
-    if (widthPct == null) localStorage.removeItem(SUBS_WIDTH_KEY);
-    else localStorage.setItem(SUBS_WIDTH_KEY, String(Math.round(widthPct * 10) / 10));
-  } catch { /* ignore */ }
+  if (widthPct == null) storage?.safeRemove(SUBS_WIDTH_KEY);
+  else storage?.safeSet(SUBS_WIDTH_KEY, String(Math.round(widthPct * 10) / 10));
 }
 
 function clampSubsWidth(widthPct) {

@@ -87,9 +87,13 @@ docker compose up -d --build
 english-learn/
 ├── backend/
 │   ├── app.py           # Альтернативная точка входа backend
-│   └── data/
-│       └── vocab_repo.py # SQLite-репозиторий словаря
+│   ├── data/
+│   │   └── vocab_repo.py # SQLite-репозиторий словаря
+│   └── http/
+│       └── io.py        # JSON body + HTTP response helper'ы
 ├── frontend/
+│   ├── api/
+│   │   └── client.js    # Клиент для /api/* запросов
 │   ├── subtitles/
 │   │   └── parser.js    # Парсинг SRT/VTT
 │   └── utils/

@@ -30,6 +30,7 @@ from backend.data.vocab_repo import (
     vocab_import_many,
     vocab_list,
 )
+from backend.http.io import json_response, read_json_body, text_response
 
 ROOT = Path(__file__).resolve().parent
 _dns_lock = threading.Lock()
@@ -2821,32 +2822,13 @@ class SubLearnHandler(SimpleHTTPRequestHandler):
         self._json_response(404, {"error": "Not found"})
 
     def _read_json_body(self) -> dict:
-        length = int(self.headers.get("Content-Length") or 0)
-        if length <= 0:
-            return {}
-        if length > 2_000_000:
-            raise ValueError("Слишком большое тело запроса")
-        raw = self.rfile.read(length)
-        data = json.loads(raw.decode("utf-8"))
-        if not isinstance(data, dict):
-            raise ValueError("Ожидался JSON-объект")
-        return data
+        return read_json_body(self)
 
     def _text_response(self, code: int, text: str, content_type: str):
-        body = text.encode("utf-8")
-        self.send_response(code)
-        self.send_header("Content-Type", f"{content_type}; charset=utf-8")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
+        text_response(self, code, text, content_type)
 
     def _json_response(self, code: int, payload: dict):
-        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-        self.send_response(code)
-        self.send_header("Content-Type", "application/json; charset=utf-8")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
+        json_response(self, code, payload)
 
 
 def main():
