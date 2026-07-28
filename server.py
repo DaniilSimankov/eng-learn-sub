@@ -138,7 +138,7 @@ SECURITY_HEADERS = (
         "script-src 'self' https://cdn.jsdelivr.net; "
         "style-src 'self' 'unsafe-inline'; "
         "connect-src 'self'; "
-        "img-src 'self' data: blob:; "
+        "img-src 'self' data: blob: https:; "
         "media-src 'self' blob:; "
         "frame-src 'self' https: http:; "
         "object-src 'none'; "
