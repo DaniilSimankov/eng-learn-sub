@@ -744,7 +744,7 @@ OLLAMA_URL = os.environ.get("SUBLEARN_OLLAMA_URL", "http://ollama:11434").rstrip
 # Одна универсальная модель; «два агента» = разные промпты/num_ctx (слова vs фразы).
 # Для qwen3 обязательно think:false в _chat_translate.
 OLLAMA_MODEL = os.environ.get("SUBLEARN_OLLAMA_MODEL", "qwen3:4b")
-OLLAMA_KEEP_ALIVE = os.environ.get("OLLAMA_KEEP_ALIVE", "0")
+OLLAMA_KEEP_ALIVE = os.environ.get("OLLAMA_KEEP_ALIVE", "3m")
 try:
     OLLAMA_NUM_THREAD = max(1, int(os.environ.get("SUBLEARN_OLLAMA_NUM_THREAD", "2")))
 except ValueError:
@@ -954,14 +954,18 @@ def ollama_status() -> dict:
         return {
             "ok": False,
             "ready": False,
+            "loaded": False,
             "model": OLLAMA_MODEL,
+            "keep_alive": OLLAMA_KEEP_ALIVE,
             "error": f"Ollama недоступна: {exc.reason}. Запустите ./start.sh",
         }
     except Exception as exc:  # noqa: BLE001
         return {
             "ok": False,
             "ready": False,
+            "loaded": False,
             "model": OLLAMA_MODEL,
+            "keep_alive": OLLAMA_KEEP_ALIVE,
             "error": str(exc),
         }
 
@@ -971,14 +975,80 @@ def ollama_status() -> dict:
         if name:
             names.append(name)
     ready = _model_ready(names, OLLAMA_MODEL)
+    loaded = False
+    if ready:
+        try:
+            ps = _ollama_request("/api/ps", timeout=5)
+            running = []
+            for item in ps.get("models") or []:
+                name = item.get("name") or item.get("model") or ""
+                if name:
+                    running.append(name)
+            loaded = _model_ready(running, OLLAMA_MODEL)
+        except Exception:  # noqa: BLE001
+            loaded = False
 
     return {
         "ok": True,
         "ready": ready,
+        "loaded": loaded,
         "model": OLLAMA_MODEL,
+        "keep_alive": OLLAMA_KEEP_ALIVE,
         "agents": ["word", "phrase"],
         "models": names,
         "error": None if ready else f"Модель ещё не скачана: {OLLAMA_MODEL}",
+    }
+
+
+def ollama_warm() -> dict:
+    """Загрузить модель в RAM с keep_alive (без полноценного ответа)."""
+    status = ollama_status()
+    if not status.get("ok"):
+        return {
+            "ok": False,
+            "loaded": False,
+            "model": OLLAMA_MODEL,
+            "error": status.get("error") or "Ollama недоступна",
+        }
+    if not status.get("ready"):
+        return {
+            "ok": False,
+            "loaded": False,
+            "model": OLLAMA_MODEL,
+            "error": status.get("error") or f"Модель не скачана: {OLLAMA_MODEL}",
+        }
+    if status.get("loaded"):
+        return {
+            "ok": True,
+            "loaded": True,
+            "model": OLLAMA_MODEL,
+            "keep_alive": OLLAMA_KEEP_ALIVE,
+            "error": None,
+        }
+
+    payload = {
+        "model": OLLAMA_MODEL,
+        "keep_alive": OLLAMA_KEEP_ALIVE,
+        "stream": False,
+        "prompt": "",
+        "options": {
+            "num_predict": 0,
+            "num_thread": OLLAMA_NUM_THREAD,
+        },
+    }
+    try:
+        with _ollama_lock:
+            _ollama_request("/api/generate", payload, timeout=120)
+    except urllib.error.HTTPError as exc:
+        body = exc.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"Ollama HTTP {exc.code}: {body[:200]}") from exc
+
+    return {
+        "ok": True,
+        "loaded": True,
+        "model": OLLAMA_MODEL,
+        "keep_alive": OLLAMA_KEEP_ALIVE,
+        "error": None,
     }
 
 
@@ -2127,6 +2197,42 @@ class SubLearnHandler(SimpleHTTPRequestHandler):
                 self._json_response(502, {"error": str(exc)})
             except Exception as exc:  # noqa: BLE001
                 self._json_response(500, {"error": str(exc)})
+            return
+        if parsed.path == "/api/ai-warm":
+            try:
+                result = ollama_warm()
+                code = 200 if result.get("ok") else 503
+                self._json_response(code, result)
+            except urllib.error.URLError as exc:
+                self._json_response(
+                    502,
+                    {
+                        "ok": False,
+                        "loaded": False,
+                        "model": OLLAMA_MODEL,
+                        "error": f"Ollama недоступна: {exc.reason}",
+                    },
+                )
+            except RuntimeError as exc:
+                self._json_response(
+                    502,
+                    {
+                        "ok": False,
+                        "loaded": False,
+                        "model": OLLAMA_MODEL,
+                        "error": str(exc),
+                    },
+                )
+            except Exception as exc:  # noqa: BLE001
+                self._json_response(
+                    500,
+                    {
+                        "ok": False,
+                        "loaded": False,
+                        "model": OLLAMA_MODEL,
+                        "error": str(exc),
+                    },
+                )
             return
         self._json_response(404, {"error": "Not found"})
 

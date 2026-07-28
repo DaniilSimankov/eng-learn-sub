@@ -68,7 +68,7 @@ docker compose up -d --build
 | **web** | UI, API, прокси медиа, словарь | 1 CPU · 768 MB · порт **8765** |
 | **ollama** | Локальная модель для разбора фраз | 2 CPU · 4 GB · только внутри сети |
 
-Модель не держится в RAM: `OLLAMA_KEEP_ALIVE=0` — ИИ загружается только когда пользователь нажимает кнопку объяснения. Быстрые клики по словам идут через Google Translate.
+Модель стартует cold (на диске). После клика ИИ или prefetch (открытие попапа / hover на «ИИ») держится в RAM `OLLAMA_KEEP_ALIVE=3m`, потом сама выгружается. Во время playback prefetch не стартует. Быстрые клики по словам идут через Google Translate.
 
 ### Поток данных
 
@@ -76,7 +76,7 @@ docker compose up -d --build
 2. `web` резолвит страницу → Ylitron ID / поток / субтитры.
 3. Плеер играет HLS через `/api/stream`, субтитры через `/api/subtitles`.
 4. Клик по слову → `/api/translate` (Google).
-5. Кнопка ИИ → `/api/explain` → Ollama (`qwen3:4b`).
+5. Кнопка ИИ → `/api/explain` → Ollama (`qwen3:4b`). Prefetch: `POST /api/ai-warm` при открытии попапа / hover.
 6. Словарь сохраняется в SQLite (`vocab_data` volume).
 
 ---
@@ -107,7 +107,8 @@ english-learn/
 | `GET` | `/api/stream` | Прокси HLS / медиа |
 | `GET` | `/api/subtitles` | Прокси субтитров |
 | `GET` | `/api/translate` | Перевод слова/фразы |
-| `GET` | `/api/ai-status` | Готовность Ollama |
+| `GET` | `/api/ai-status` | Готовность Ollama (`ready` / `loaded`) |
+| `POST` | `/api/ai-warm` | Prefetch: загрузить модель в RAM на keep-alive |
 | `POST` | `/api/explain` | Объяснение через ИИ |
 | `GET/POST/DELETE` | `/api/vocab` | Словарь |
 | `POST` | `/api/vocab/import` | Импорт словаря |
@@ -126,7 +127,7 @@ english-learn/
 | `SUBLEARN_OLLAMA_URL` | `http://ollama:11434` | URL Ollama |
 | `SUBLEARN_OLLAMA_MODEL` | `qwen3:4b` | Имя модели |
 | `SUBLEARN_OLLAMA_NUM_THREAD` | `2` | Потоки инференса |
-| `OLLAMA_KEEP_ALIVE` | `0` | Не держать модель в RAM |
+| `OLLAMA_KEEP_ALIVE` | `3m` | Тёплый idle: сколько держать модель в RAM после AI/prefetch |
 | `SUBLEARN_TRANSLATE_ENGINE` | `google` | Движок перевода |
 | `SUBLEARN_GOOGLE_TRANSLATE` | `1` | Вкл. Google Translate |
 

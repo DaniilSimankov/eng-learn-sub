@@ -43,7 +43,7 @@ if ! model_present; then
   fi
 fi
 
-# Выгрузить ВСЕ модели из RAM: ИИ должен «спать», пока пользователь не нажмёт кнопку.
+# Выгрузить ВСЕ модели из RAM при старте: cold start, warm idle включается по AI/prefetch.
 python3 - "$OLLAMA_URL" <<'PY' || true
 import json, sys, urllib.request
 url = sys.argv[1]
@@ -67,6 +67,6 @@ for item in tags.get("models") or []:
         print(f"[web] unload {name} skipped: {exc}")
 PY
 
-echo "[web] model on disk: ${MODEL} (cold — loads only on AI button)"
+echo "[web] model on disk: ${MODEL} (cold start; warm idle 3m after AI/prefetch)"
 echo "[web] starting on :${SUBLEARN_PORT:-8765}"
 exec python3 /app/server.py

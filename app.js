@@ -61,6 +61,7 @@ const state = {
   lastPopupProvider: null,
   lastInlineProvider: null,
   aiReady: false,
+  aiLoaded: false,
   wordAnchorIndex: null,
   wordDrag: null,
   ignorePopupHideUntil: 0,
@@ -504,6 +505,9 @@ bindOnlineTranslationToggle(onlineTranslationSetup);
 refreshAiStatus();
 setInterval(refreshAiStatus, 15000);
 
+let warmAiTimer = 0;
+let warmAiInFlight = false;
+
 async function refreshAiStatus() {
   if (!aiStatusEl) return;
   try {
@@ -511,6 +515,8 @@ async function refreshAiStatus() {
     const data = await res.json();
     aiStatusEl.classList.remove('is-ok', 'is-warn', 'is-err');
     state.aiReady = Boolean(data.ok && data.ready);
+    state.aiLoaded = Boolean(data.ok && data.ready && data.loaded);
+    const keepAlive = data.keep_alive || '3m';
     if (!data.ok) {
       aiStatusEl.textContent = 'Ollama выкл';
       aiStatusEl.classList.add('is-err');
@@ -525,16 +531,47 @@ async function refreshAiStatus() {
     }
     aiStatusEl.textContent = data.model || 'ok';
     aiStatusEl.classList.add('is-ok');
-    aiStatusEl.title = data.agents
-      ? `Модель ${data.model} · агенты: ${(data.agents || []).join(', ')}`
-      : `Локальная модель готова: ${data.model}`;
+    if (state.aiLoaded) {
+      aiStatusEl.title = `Модель ${data.model} в RAM · idle ${keepAlive}`;
+    } else {
+      aiStatusEl.title = `Модель ${data.model} на диске · прогрев по клику/hover`;
+    }
   } catch {
     state.aiReady = false;
+    state.aiLoaded = false;
     aiStatusEl.textContent = 'нет связи';
     aiStatusEl.classList.remove('is-ok', 'is-warn');
     aiStatusEl.classList.add('is-err');
     aiStatusEl.title = 'Сервер SubLearn недоступен';
   }
+}
+
+function warmAiModel() {
+  if (!state.onlineTranslation || !state.aiReady) return;
+  if (state.aiLoaded || warmAiInFlight) return;
+  if (typeof isVideoActivelyPlaying === 'function' && isVideoActivelyPlaying()) return;
+  if (warmAiTimer) clearTimeout(warmAiTimer);
+  warmAiTimer = setTimeout(async () => {
+    warmAiTimer = 0;
+    if (!state.aiReady || state.aiLoaded || warmAiInFlight) return;
+    if (typeof isVideoActivelyPlaying === 'function' && isVideoActivelyPlaying()) return;
+    warmAiInFlight = true;
+    try {
+      const res = await fetch('/api/ai-warm', { method: 'POST' });
+      const data = await res.json().catch(() => ({}));
+      if (data.ok && data.loaded) {
+        state.aiLoaded = true;
+        if (aiStatusEl && state.aiReady) {
+          const keepAlive = data.keep_alive || '3m';
+          aiStatusEl.title = `Модель ${data.model || ''} в RAM · idle ${keepAlive}`.trim();
+        }
+      }
+    } catch {
+      // прогрев необязателен — следующий клик ИИ всё равно загрузит модель
+    } finally {
+      warmAiInFlight = false;
+    }
+  }, 300);
 }
 
 function loadPreferredAudioLang() {
@@ -924,6 +961,7 @@ popupAi?.addEventListener('click', (e) => {
   e.stopPropagation();
   refinePopupWithAi();
 });
+popupAi?.addEventListener('pointerenter', () => warmAiModel());
 popupAskForm?.addEventListener('submit', (e) => {
   e.preventDefault();
   e.stopPropagation();
@@ -936,6 +974,7 @@ $$('.popup__ask-chip').forEach((chip) => {
   });
 });
 popupAskInput?.addEventListener('click', (e) => e.stopPropagation());
+popupAskInput?.addEventListener('focus', () => warmAiModel());
 subtitleTranslationRetry?.addEventListener('click', (e) => {
   e.stopPropagation();
   retryInlineTranslation();
@@ -944,6 +983,7 @@ subtitleTranslationAi?.addEventListener('click', (e) => {
   e.stopPropagation();
   refineInlineWithAi();
 });
+subtitleTranslationAi?.addEventListener('pointerenter', () => warmAiModel());
 document.addEventListener('click', (e) => {
   if (Date.now() < state.ignorePopupHideUntil) return;
   if (wordPopup.classList.contains('hidden')) return;
@@ -2215,6 +2255,9 @@ async function refineInlineWithAi() {
   if (state.currentCueIndex >= 0 && state.cues[state.currentCueIndex]?.text === cue.text) {
     setInlineTranslation(ru);
   }
+  if (!isTranslationFailure(ru) && translationProvider(ru) === 'ollama') {
+    state.aiLoaded = true;
+  }
 }
 
 function tokenizeToHtml(text) {
@@ -2587,6 +2630,7 @@ function showPopup(word, sentence, rect) {
   resetPopupAsk();
   wordPopup.classList.remove('hidden');
   applyPopupAskOpen(state.popupAskOpen);
+  warmAiModel();
 
   const pinnedSize = state.popupPinnedSize;
   if (pinnedSize) {
@@ -2844,6 +2888,9 @@ async function refinePopupWithAi() {
   if (state.lastPopupWord?.word === word) {
     setPopupTranslation(translation);
   }
+  if (!isTranslationFailure(translation) && translationProvider(translation) === 'ollama') {
+    state.aiLoaded = true;
+  }
 }
 
 function resetPopupAsk() {
@@ -2878,7 +2925,7 @@ async function askPopupTutor(question) {
   appendAskMessage('user', q);
   const pending = appendAskMessage(
     'ai',
-    state.aiReady ? 'ИИ думает…' : 'Загрузка модели…',
+    state.aiLoaded ? 'ИИ думает…' : 'Загрузка модели…',
     { loading: true },
   );
   if (popupAskSend) popupAskSend.disabled = true;
@@ -2901,6 +2948,7 @@ async function askPopupTutor(question) {
       pending.textContent = data.answer || 'Пустой ответ';
       pending.classList.remove('is-loading', 'is-error');
     }
+    state.aiLoaded = true;
   } catch (err) {
     if (state.lastPopupWord?.word !== current.word) return;
     if (pending) {
