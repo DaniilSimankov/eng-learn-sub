@@ -18,10 +18,13 @@ const WATCH_SESSION_KEY = 'sublearn-watch-session';
 const POPUP_POS_KEY = 'sublearn-popup-pos';
 const POPUP_SIZE_KEY = 'sublearn-popup-size';
 const POPUP_ASK_OPEN_KEY = 'sublearn-popup-ask-open';
+const POPUP_MODE_KEY = 'sublearn-popup-mode';
 const POPUP_W_MIN = 360;
 const POPUP_W_MIN_COLLAPSED = 240;
+const POPUP_W_MIN_COMPACT = 180;
 const POPUP_H_MIN = 200;
 const POPUP_H_MIN_COLLAPSED = 140;
+const POPUP_H_MIN_COMPACT = 72;
 const POPUP_W_DEFAULT = 640;
 const WATCH_POS_MIN_SEC = 5;
 const WATCH_POS_END_RATIO = 0.95;
@@ -70,6 +73,7 @@ const state = {
   popupPinnedPos: loadPopupPos(),
   popupPinnedSize: loadPopupSize(),
   popupAskOpen: loadPopupAskOpen(),
+  popupMode: loadPopupMode(),
   preferredVoiceURI: null,
   translationCache: new Map(),
   translationInflight: new Map(),
@@ -142,6 +146,7 @@ const popupAskLog = $('#popup-ask-log');
 const popupAskSend = $('#popup-ask-send');
 const popupAskPanel = $('#popup-ask');
 const popupAskToggle = $('#popup-ask-toggle');
+const popupModeToggle = $('#popup-mode-toggle');
 const popupDragHandle = $('#popup-drag');
 const vocabDrawer = $('#vocab-drawer');
 const vocabList = $('#vocab-list');
@@ -2481,6 +2486,25 @@ function loadPopupAskOpen() {
   }
 }
 
+function loadPopupMode() {
+  try {
+    const raw = localStorage.getItem(POPUP_MODE_KEY);
+    if (raw === 'compact' || raw === 'extended') return raw;
+    return 'extended';
+  } catch {
+    return 'extended';
+  }
+}
+
+function savePopupMode(mode) {
+  state.popupMode = mode === 'compact' ? 'compact' : 'extended';
+  try {
+    localStorage.setItem(POPUP_MODE_KEY, state.popupMode);
+  } catch {
+    /* ignore */
+  }
+}
+
 function savePopupAskOpen(open) {
   state.popupAskOpen = !!open;
   try {
@@ -2491,6 +2515,9 @@ function savePopupAskOpen(open) {
 }
 
 function popupSizeMins() {
+  if (state.popupMode === 'compact') {
+    return { w: POPUP_W_MIN_COMPACT, h: POPUP_H_MIN_COMPACT };
+  }
   if (state.popupAskOpen === false) {
     return { w: POPUP_W_MIN_COLLAPSED, h: POPUP_H_MIN_COLLAPSED };
   }
@@ -2499,6 +2526,11 @@ function popupSizeMins() {
 
 function applyPopupAskOpen(open = state.popupAskOpen) {
   if (!wordPopup) return;
+  if (state.popupMode === 'compact') {
+    state.popupAskOpen = open !== false;
+    wordPopup.classList.add('is-ask-collapsed');
+    return;
+  }
   state.popupAskOpen = open !== false;
   wordPopup.classList.toggle('is-ask-collapsed', !state.popupAskOpen);
   if (popupAskToggle) {
@@ -2516,6 +2548,41 @@ function applyPopupAskOpen(open = state.popupAskOpen) {
   const height = wordPopup.style.height ? box.height : null;
   if (state.popupAskOpen && width < POPUP_W_MIN) width = POPUP_W_MIN;
   applyPopupSize(width, height);
+}
+
+function applyPopupMode(mode = state.popupMode, { reposition = false } = {}) {
+  if (!wordPopup) return;
+  state.popupMode = mode === 'compact' ? 'compact' : 'extended';
+  wordPopup.classList.toggle('is-compact', state.popupMode === 'compact');
+  wordPopup.classList.toggle('is-extended', state.popupMode === 'extended');
+
+  const isCompact = state.popupMode === 'compact';
+  if (popupModeToggle) {
+    popupModeToggle.title = isCompact ? 'Расширенный режим' : 'Компактный режим';
+    popupModeToggle.setAttribute('aria-label', popupModeToggle.title);
+    popupModeToggle.textContent = isCompact ? '⛶' : '▫';
+  }
+
+  if (isCompact) {
+    wordPopup.classList.remove('has-custom-size');
+    wordPopup.style.width = '';
+    wordPopup.style.height = '';
+    wordPopup.classList.add('is-ask-collapsed');
+  } else {
+    applyPopupAskOpen(state.popupAskOpen);
+    if (state.popupPinnedSize) {
+      applyPopupSize(state.popupPinnedSize.width, state.popupPinnedSize.height);
+    } else {
+      wordPopup.classList.remove('has-custom-size');
+      wordPopup.style.width = '';
+      wordPopup.style.height = '';
+    }
+  }
+
+  if (reposition && !wordPopup.classList.contains('hidden')) {
+    const box = wordPopup.getBoundingClientRect();
+    applyPopupPos(box.left, box.top, box.width, box.height);
+  }
 }
 
 function loadPopupSize() {
@@ -2634,17 +2701,8 @@ function showPopup(word, sentence, rect) {
   popupContext.textContent = sentence;
   resetPopupAsk();
   wordPopup.classList.remove('hidden');
-  applyPopupAskOpen(state.popupAskOpen);
+  applyPopupMode(state.popupMode);
   warmAiModel();
-
-  const pinnedSize = state.popupPinnedSize;
-  if (pinnedSize) {
-    applyPopupSize(pinnedSize.width, pinnedSize.height);
-  } else {
-    wordPopup.classList.remove('has-custom-size');
-    wordPopup.style.width = '';
-    wordPopup.style.height = '';
-  }
 
   const pinned = state.popupPinnedPos;
   if (pinned) {
@@ -2713,6 +2771,7 @@ function bindPopupAskToggle() {
   popupAskToggle.addEventListener('click', (e) => {
     e.preventDefault();
     e.stopPropagation();
+    if (state.popupMode === 'compact') return;
     const next = !state.popupAskOpen;
     savePopupAskOpen(next);
     applyPopupAskOpen(next);
@@ -2724,7 +2783,21 @@ function bindPopupAskToggle() {
 }
 
 bindPopupAskToggle();
-applyPopupAskOpen(state.popupAskOpen);
+applyPopupMode(state.popupMode);
+
+function bindPopupModeToggle() {
+  if (!popupModeToggle || popupModeToggle.dataset.bound === '1') return;
+  popupModeToggle.dataset.bound = '1';
+  popupModeToggle.addEventListener('click', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const next = state.popupMode === 'compact' ? 'extended' : 'compact';
+    savePopupMode(next);
+    applyPopupMode(next, { reposition: true });
+  });
+}
+
+bindPopupModeToggle();
 
 function bindPopupResize() {
   if (!wordPopup || wordPopup.dataset.resizeBound === '1') return;
@@ -2801,13 +2874,13 @@ bindPopupResize();
 
 window.addEventListener('resize', () => {
   if (!wordPopup || wordPopup.classList.contains('hidden')) return;
-  if (state.popupPinnedSize) {
+  if (state.popupMode !== 'compact' && state.popupPinnedSize) {
     applyPopupSize(state.popupPinnedSize.width, state.popupPinnedSize.height);
   }
   const box = wordPopup.getBoundingClientRect();
   const next = applyPopupPos(box.left, box.top, box.width, box.height);
   if (state.popupPinnedPos) savePopupPos(next);
-  if (state.popupPinnedSize) {
+  if (state.popupMode !== 'compact' && state.popupPinnedSize) {
     savePopupSize({
       width: box.width,
       height: state.popupPinnedSize.height != null ? box.height : null,

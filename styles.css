@@ -880,6 +880,49 @@ body {
   width: min(320px, calc(100vw - 16px));
 }
 
+.popup.is-compact {
+  min-width: 180px;
+  min-height: auto;
+  width: min(280px, calc(100vw - 16px));
+  padding: 0.55rem 0.75rem 0.65rem;
+}
+
+.popup.is-compact .popup__drag {
+  right: 3.5rem;
+  height: 0.9rem;
+}
+
+.popup.is-compact .popup__word {
+  font-size: 1.05rem;
+  margin-bottom: 0.2rem;
+  padding-right: 1rem;
+}
+
+.popup.is-compact .popup__translation {
+  font-size: 1rem;
+  margin-bottom: 0;
+}
+
+.popup.is-compact .popup__main {
+  flex: 1 1 auto;
+  padding-right: 0;
+  overflow: visible;
+}
+
+.popup.is-compact .popup__translation-note,
+.popup.is-compact .popup__translate-tools,
+.popup.is-compact .popup__context,
+.popup.is-compact .popup__actions,
+.popup.is-compact .popup__ask,
+.popup.is-compact .popup__ask-toggle,
+.popup.is-compact .popup__resize {
+  display: none !important;
+}
+
+.popup.is-compact.has-custom-size {
+  height: auto !important;
+}
+
 .popup.has-custom-size {
   height: auto;
 }
@@ -904,7 +947,7 @@ body {
   position: absolute;
   top: 0;
   left: 0;
-  right: 2rem;
+  right: 3.5rem;
   height: 1.1rem;
   cursor: grab;
   border-radius: var(--radius) var(--radius) 0 0;
@@ -1045,6 +1088,32 @@ body {
   cursor: pointer;
   line-height: 1;
   z-index: 4;
+}
+
+.popup__mode-btn {
+  position: absolute;
+  top: 0.35rem;
+  right: 2rem;
+  width: 1.35rem;
+  height: 1.35rem;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text-muted);
+  font-size: 0.78rem;
+  line-height: 1;
+  cursor: pointer;
+  z-index: 4;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.popup__mode-btn:hover {
+  color: #c5d0ff;
+  border-color: rgba(108, 140, 255, 0.45);
+  background: rgba(108, 140, 255, 0.12);
 }
 
 .popup__word {
@@ -1226,6 +1295,11 @@ body {
     width: min(420px, calc(100vw - 16px));
   }
 
+  .popup.is-compact {
+    width: min(320px, calc(100vw - 16px));
+    min-width: 0;
+  }
+
   .popup.is-ask-collapsed {
     width: min(420px, calc(100vw - 16px));
     min-width: 0;
@@ -1261,6 +1335,10 @@ body {
 
   .popup.is-ask-collapsed .popup__ask {
     display: flex;
+  }
+
+  .popup.is-compact .popup__ask {
+    display: none !important;
   }
 
   .popup.has-custom-size .popup__ask {
