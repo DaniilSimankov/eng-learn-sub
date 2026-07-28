@@ -1162,10 +1162,26 @@ body {
   display: none !important;
 }
 
+.popup__save-compact {
+  display: none;
+  padding: 0.35rem 0.55rem;
+  line-height: 1;
+}
+
+.popup.is-compact .popup__save-compact {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
 .popup.is-compact .popup__translate-tools {
   display: flex;
   margin-top: 0.35rem;
   margin-bottom: 0;
+}
+
+.popup.is-compact .popup__mode-btn {
+  margin-left: auto;
 }
 
 .popup.is-compact.has-custom-size {

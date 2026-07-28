@@ -963,6 +963,10 @@ subtitleDisplay.addEventListener('click', (e) => {
 
 $('#popup-close').addEventListener('click', hidePopup);
 $('#popup-save').addEventListener('click', saveFromPopup);
+$('#popup-save-compact')?.addEventListener('click', (e) => {
+  e.stopPropagation();
+  saveFromPopup();
+});
 $('#popup-speak').addEventListener('click', speakPopupWord);
 popupRetry?.addEventListener('click', (e) => {
   e.stopPropagation();
