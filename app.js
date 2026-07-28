@@ -1283,7 +1283,7 @@ async function resolvePageUrl(options = {}) {
   }
   savePageUrl(url);
 
-  setStatus(autoStart ? 'Восстанавливаем просмотр…' : 'Ищу Ylitron ID на странице NewDeaf…');
+  setStatus(autoStart ? 'Восстанавливаем просмотр…' : 'Ищу Ylitron ID на странице…');
   btnResolve.disabled = true;
 
   try {

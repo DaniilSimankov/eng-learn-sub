@@ -194,7 +194,7 @@ def validate_page_url(url: str) -> str:
     if _host_matches_embed(host) or _host_matches_suffix(host, ALLOWED_PAGE_SUFFIXES):
         return url
     raise SecurityError(
-        "Разрешены только ссылки NewDeaf (*.newdeaf.co) или embed-плееры из белого списка"
+        "Разрешены только страницы с плеером Ylitron или embed из белого списка"
     )
 
 
@@ -611,11 +611,11 @@ def resolve_page(url: str) -> dict:
     iframe_urls = extract_players(page_html)
     if not iframe_urls:
         raise ValueError(
-            "На странице не найден плеер. Вставьте ссылку на серию NewDeaf "
-            "или прямую ссылку iframe из «Плеер 1/2/3»."
+            "На странице не найден плеер. Вставьте ссылку на страницу "
+            "с источником Ylitron или прямую ссылку iframe."
         )
 
-    # Предпочитаем ylitron: id берём с NewDeaf, дальше ходим только туда
+    # Предпочитаем ylitron: id со страницы, дальше ходим только туда
     found = find_ylitron_player(iframe_urls)
     if found:
         ylitron_url, ref = found
