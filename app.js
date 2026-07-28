@@ -90,6 +90,7 @@ const state = {
   subsEditMode: false,
   subsDrag: null,
   subsResize: null,
+  lastSearchResults: [],
 };
 
 const $ = (sel) => document.querySelector(sel);
@@ -1487,6 +1488,48 @@ function setEpisodeOptions(items, selectedUrl = '') {
   });
 }
 
+function pickNonEmptyEpisodeOptions(...candidates) {
+  for (const candidate of candidates) {
+    if (Array.isArray(candidate) && candidate.length) return candidate;
+  }
+  return [];
+}
+
+function seriesKeyFromUrl(url) {
+  if (!url) return '';
+  try {
+    const parsed = new URL(url, window.location.origin);
+    const path = (parsed.pathname || '').toLowerCase();
+    const m = path.match(/\/serial\/\d+-([a-z0-9-]+?)(?:-(?:\d+-(?:sezon|season).*)?)?\.html$/);
+    return (m?.[1] || '').replace(/-+$/, '');
+  } catch {
+    return '';
+  }
+}
+
+function mergeSeriesOptionsWithSearchCache(seriesOptions, sourceUrl, title) {
+  const base = Array.isArray(seriesOptions) ? [...seriesOptions] : [];
+  const cached = Array.isArray(state.lastSearchResults) ? state.lastSearchResults : [];
+  if (!cached.length) return base;
+
+  const key = seriesKeyFromUrl(sourceUrl);
+  if (!key) return base;
+
+  const seen = new Set(base.map((item) => item?.url).filter(Boolean));
+  cached.forEach((item) => {
+    const itemUrl = item?.url || '';
+    if (!itemUrl || seen.has(itemUrl)) return;
+    if (seriesKeyFromUrl(itemUrl) !== key) return;
+    seen.add(itemUrl);
+    base.push({
+      title: item?.title || title || itemUrl,
+      url: itemUrl,
+    });
+  });
+
+  return base;
+}
+
 function renderSearchResults(items) {
   if (!seriesSelect || !seriesTrigger || !seriesLabel || !seriesOptions) {
     searchResults.innerHTML = '';
@@ -1495,12 +1538,14 @@ function renderSearchResults(items) {
   }
 
   if (!items.length) {
+    state.lastSearchResults = [];
     searchResults.innerHTML = '';
     searchResults.classList.add('hidden');
   setSeriesOptions([]);
   setEpisodeOptions([]);
     return;
   }
+  state.lastSearchResults = items;
 
   const sourceLabel = (source) => (source === 'catalog_b' ? 'Каталог 2' : 'Каталог 1');
   const grouped = items.reduce((acc, item) => {
@@ -1717,7 +1762,12 @@ async function resolvePageUrl(options = {}) {
           (p) => Array.isArray(p.episodeOptions) && p.episodeOptions.length
         )?.episodeOptions || [];
         const selectedEpisodeUrl = state.selectedPlayer?.iframeUrl || data.sourceUrl || url;
-        setEpisodeOptions(state.selectedPlayer?.episodeOptions || fallbackEpisodeOptions, selectedEpisodeUrl);
+        const episodeList = pickNonEmptyEpisodeOptions(
+          state.selectedPlayer?.episodeOptions,
+          fallbackEpisodeOptions,
+          data.episodeOptions
+        );
+        setEpisodeOptions(episodeList, selectedEpisodeUrl);
         saveWatchSession({
           url,
           playerIndex: idx,
@@ -1730,19 +1780,25 @@ async function resolvePageUrl(options = {}) {
     });
 
     resolvedInfo.classList.remove('hidden');
-    if (Array.isArray(data.seriesOptions) && data.seriesOptions.length) {
-      setSeriesOptions(data.seriesOptions, data.sourceUrl || url);
-    } else {
-      setSeriesOptions([{ title: data.title || url, url }], url);
-    }
+    const rawSeriesOptions = (Array.isArray(data.seriesOptions) && data.seriesOptions.length)
+      ? data.seriesOptions
+      : [{ title: data.title || url, url }];
+    const mergedSeriesOptions = mergeSeriesOptionsWithSearchCache(
+      rawSeriesOptions,
+      data.sourceUrl || url,
+      data.title || ''
+    );
+    setSeriesOptions(mergedSeriesOptions, data.sourceUrl || url);
     const fallbackEpisodeOptions = sorted.find(
       (p) => Array.isArray(p.episodeOptions) && p.episodeOptions.length
     )?.episodeOptions || [];
     const selectedEpisodeUrl = state.selectedPlayer?.iframeUrl || data.sourceUrl || url;
-    setEpisodeOptions(
-      state.selectedPlayer?.episodeOptions || fallbackEpisodeOptions || data.episodeOptions || [],
-      selectedEpisodeUrl
+    const episodeList = pickNonEmptyEpisodeOptions(
+      state.selectedPlayer?.episodeOptions,
+      fallbackEpisodeOptions,
+      data.episodeOptions
     );
+    setEpisodeOptions(episodeList, selectedEpisodeUrl);
     if (data.ylitronId) {
       const ok = state.selectedPlayer?.streamUrl;
       setStatus(

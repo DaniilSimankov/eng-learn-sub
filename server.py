@@ -151,6 +151,20 @@ RELATED_TITLE_RE = re.compile(
     re.IGNORECASE | re.DOTALL,
 )
 HREF_RE = re.compile(r'href="([^"]+)"', re.IGNORECASE)
+NEWDEAF_SERIAL_LIST_RE = re.compile(
+    r'<table[^>]*class="[^"]*\bnewdeaf-serial_list\b[^"]*"[^>]*>(.*?)</table>',
+    re.IGNORECASE | re.DOTALL,
+)
+NEWDEAF_SERIAL_ROW_RE = re.compile(r"<tr[^>]*>(.*?)</tr>", re.IGNORECASE | re.DOTALL)
+NEWDEAF_SEASON_CELL_RE = re.compile(r"<th[^>]*>\s*(\d+)\s*сезон\s*</th>", re.IGNORECASE)
+NEWDEAF_ROW_BUTTON_URL_RE = re.compile(
+    r"location\.href\s*=\s*['\"](https?://[^'\"]+|/[^'\"]+)['\"]",
+    re.IGNORECASE,
+)
+NEWDEAF_SEASON_EPISODE_COUNT_RE = re.compile(
+    r"(\d+)\s*сезон\s+и\s+(\d+)\s*из\s*(\d+)\s*сери",
+    re.IGNORECASE,
+)
 CDN_DATA_ITEM_RE = re.compile(
     r"window\.cdnData\[\d+\]\s*=\s*(\{.*?\});",
     re.IGNORECASE | re.DOTALL,
@@ -843,6 +857,73 @@ def extract_same_series_options(page_html: str, current_url: str, page_title: st
         seen.add(href)
 
     return items
+
+
+def extract_newdeaf_serial_list_options(page_html: str, current_url: str, page_title: str) -> list[dict]:
+    table_match = NEWDEAF_SERIAL_LIST_RE.search(page_html or "")
+    if not table_match:
+        return []
+    table_html = table_match.group(1)
+    seen = set()
+    items: list[dict] = []
+    for row_html in NEWDEAF_SERIAL_ROW_RE.findall(table_html):
+        url_match = NEWDEAF_ROW_BUTTON_URL_RE.search(row_html)
+        if not url_match:
+            continue
+        raw_url = html.unescape((url_match.group(1) or "").strip())
+        if raw_url.startswith("/"):
+            raw_url = urljoin(current_newdeaf_base() + "/", raw_url.lstrip("/"))
+        elif raw_url.startswith("//"):
+            raw_url = f"https:{raw_url}"
+        url = normalize_newdeaf_href(raw_url)
+        if not url or url in seen:
+            continue
+        try:
+            validate_page_url(url)
+        except SecurityError:
+            continue
+        season_match = NEWDEAF_SEASON_CELL_RE.search(row_html)
+        if season_match:
+            title = f"{page_title} ({season_match.group(1)} сезон)"
+        else:
+            title = page_title or url
+        seen.add(url)
+        items.append({"title": title, "url": url})
+    return items
+
+
+def extract_newdeaf_episode_options(page_html: str, iframe_url: str) -> list[dict]:
+    if not iframe_url:
+        return []
+    match = NEWDEAF_SEASON_EPISODE_COUNT_RE.search(page_html or "")
+    if not match:
+        return []
+    try:
+        season = int(match.group(1))
+        current_episode = int(match.group(2))
+        total_episodes = int(match.group(3))
+    except (TypeError, ValueError):
+        return []
+    if season < 1 or total_episodes < 1:
+        return []
+    total = max(current_episode, total_episodes)
+    total = min(total, 300)
+    parsed = urlparse(iframe_url)
+    params = parse_qs(parsed.query)
+    options: list[dict] = []
+    for ep in range(1, total + 1):
+        query = dict(params)
+        query["season"] = [str(season)]
+        query["episode"] = [str(ep)]
+        new_query = urlencode(query, doseq=True)
+        option_url = urlunparse((parsed.scheme, parsed.netloc, parsed.path, parsed.params, new_query, parsed.fragment))
+        options.append(
+            {
+                "title": f"{season} сезон · {ep} серия",
+                "url": option_url,
+            }
+        )
+    return options
 
 
 def search_newdeaf(
@@ -1785,6 +1866,15 @@ def resolve_page(url: str) -> dict:
     page_html = fetch_page(url)
     page_title = extract_title(page_html)
     series_options = extract_same_series_options(page_html, url, page_title)
+    if is_newdeaf:
+        serial_list_options = extract_newdeaf_serial_list_options(page_html, url, page_title)
+        if serial_list_options:
+            known = {item.get("url") for item in series_options}
+            for item in serial_list_options:
+                item_url = item.get("url")
+                if item_url and item_url not in known:
+                    known.add(item_url)
+                    series_options.append(item)
     if len(series_options) < 2:
         series_options = extract_related_series(page_html, url)
     if page_title:
@@ -1852,6 +1942,9 @@ def resolve_page(url: str) -> dict:
             episode_options = parse_ylitron_episode_options(embed_html)
         except Exception:  # noqa: BLE001
             episode_options = []
+    if not episode_options and is_newdeaf:
+        first_iframe = next((p.get("iframeUrl", "") for p in players if p.get("iframeUrl")), "")
+        episode_options = extract_newdeaf_episode_options(page_html, first_iframe)
 
     result = {
         "title": page_title,
