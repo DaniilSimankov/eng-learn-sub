@@ -315,9 +315,9 @@
                 type="button"
                 id="subtitle-translation-ai"
                 class="translation-retry translation-ai hidden"
-                title="Уточнить перевод через локальный ИИ"
-                aria-label="Уточнить через ИИ"
-              >ИИ</button>
+                title="Уточнить перевод через локальный AI"
+                aria-label="Уточнить через AI"
+              >AI</button>
               <button
                 type="button"
                 id="subtitle-translation-retry"
@@ -349,8 +349,19 @@
                   type="button"
                   id="popup-ai"
                   class="btn btn--ghost btn--sm translation-ai hidden"
-                  title="Уточнить перевод через локальный ИИ с учётом контекста"
-                >ИИ · разбор</button>
+                  title="Перевод через локальный AI"
+                >AI</button>
+                <label
+                  class="popup__ai-tier btn btn--ghost btn--sm hidden"
+                  id="popup-ai-tier-wrap"
+                  title="Точнее — медленнее, но детальнее (перевод и чат)"
+                >
+                  <span class="popup__ai-tier-text">Точнее</span>
+                  <span class="popup__ai-tier-track" aria-hidden="true">
+                    <input type="checkbox" id="popup-ai-tier" class="popup__ai-tier-input">
+                    <span class="popup__ai-tier-thumb"></span>
+                  </span>
+                </label>
                 <button
                   type="button"
                   id="popup-retry"
@@ -385,8 +396,8 @@
               aria-expanded="true"
               title="Скрыть чат"
             >‹</button>
-            <aside class="popup__ask" id="popup-ask" aria-label="Чат с ИИ">
-              <div class="popup__ask-label">Спросить ИИ</div>
+            <aside class="popup__ask" id="popup-ask" aria-label="Чат с AI">
+              <div class="popup__ask-label">Спросить AI</div>
               <div class="popup__ask-chips">
                 <button type="button" class="popup__ask-chip" data-q="Почему здесь так сказано? Что значит эта фраза?">Почему так?</button>
                 <button type="button" class="popup__ask-chip" data-q="Объясни грамматику этого выражения кратко.">Грамматика</button>
@@ -434,6 +445,7 @@
     </aside>
   </div>
 
+  <script src="frontend/config.js"></script>
   <script src="frontend/utils/storage.js"></script>
   <script src="frontend/subtitles/parser.js"></script>
   <script src="frontend/api/client.js"></script>

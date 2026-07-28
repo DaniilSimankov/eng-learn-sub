@@ -1,0 +1,15 @@
+services:
+  - type: web
+    name: eng-learn-sub-api
+    runtime: docker
+    plan: free
+    healthCheckPath: /api/ai-status
+    envVars:
+      - key: SUBLEARN_HOST
+        value: 0.0.0.0
+      - key: SUBLEARN_OLLAMA_OPTIONAL
+        value: "1"
+      - key: SUBLEARN_CORS_ORIGIN
+        value: https://eng-learn-sub.netlify.app
+      - key: SUBLEARN_DATA_DIR
+        value: /app/data

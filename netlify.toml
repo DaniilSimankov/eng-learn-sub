@@ -1,0 +1,18 @@
+[build]
+  command = "bash scripts/netlify-build.sh"
+  publish = "public"
+
+[build.environment]
+  NODE_VERSION = "20"
+
+[[headers]]
+  for = "/*"
+  [headers.values]
+    X-Frame-Options = "DENY"
+    X-Content-Type-Options = "nosniff"
+    Referrer-Policy = "no-referrer"
+
+[[headers]]
+  for = "/frontend/config.js"
+  [headers.values]
+    Cache-Control = "no-cache"

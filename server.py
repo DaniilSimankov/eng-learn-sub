@@ -190,6 +190,7 @@ BLOCKED_HOSTNAMES = frozenset(
         "metadata.goog",
     }
 )
+CORS_ORIGIN = os.environ.get("SUBLEARN_CORS_ORIGIN", "").strip()
 SECURITY_HEADERS = (
     ("X-Content-Type-Options", "nosniff"),
     ("X-Frame-Options", "DENY"),
@@ -2047,14 +2048,21 @@ def proxy_stream(url: str) -> Tuple[bytes, str]:
 
 
 OLLAMA_URL = os.environ.get("SUBLEARN_OLLAMA_URL", "http://ollama:11434").rstrip("/")
-# Одна универсальная модель; «два агента» = разные промпты/num_ctx (слова vs фразы).
+# Две модели: лёгкая по кнопке «ИИ», тяжёлая — эскалация если ответ плохой.
+# В RAM одновременно только одна (keep_alive + unload перед эскалацией).
 # Для qwen3 обязательно think:false в _chat_translate.
-OLLAMA_MODEL = os.environ.get("SUBLEARN_OLLAMA_MODEL", "qwen3:4b")
+OLLAMA_MODEL_HEAVY = os.environ.get("SUBLEARN_OLLAMA_MODEL", "qwen3:4b")
+OLLAMA_MODEL_LIGHT = os.environ.get("SUBLEARN_OLLAMA_MODEL_LIGHT", "qwen3:1.7b")
+OLLAMA_MODEL = OLLAMA_MODEL_HEAVY  # обратная совместимость
 OLLAMA_KEEP_ALIVE = os.environ.get("OLLAMA_KEEP_ALIVE", "3m")
 try:
     OLLAMA_NUM_THREAD = max(1, int(os.environ.get("SUBLEARN_OLLAMA_NUM_THREAD", "2")))
 except ValueError:
     OLLAMA_NUM_THREAD = 2
+CTX_WORD = 384
+CTX_PHRASE = 1280
+CTX_PHRASE_STRICT = 640
+CTX_EXPLAIN = 1280
 # google = быстрый путь; ai/ollama = локальная модель по кнопке «ИИ».
 TRANSLATE_DEFAULT_ENGINE = os.environ.get("SUBLEARN_TRANSLATE_ENGINE", "google").strip().lower()
 GOOGLE_TRANSLATE_ENABLED = os.environ.get("SUBLEARN_GOOGLE_TRANSLATE", "1").strip() not in (
@@ -2063,6 +2071,40 @@ GOOGLE_TRANSLATE_ENABLED = os.environ.get("SUBLEARN_GOOGLE_TRANSLATE", "1").stri
     "no",
     "off",
 )
+
+
+def ollama_unload(model: str) -> None:
+    """Выгрузить модель из RAM (важно при эскалации light→heavy в пределах ~3 ГБ)."""
+    if not model:
+        return
+    try:
+        with _ollama_lock:
+            _ollama_request(
+                "/api/generate",
+                {
+                    "model": model,
+                    "keep_alive": 0,
+                    "stream": False,
+                    "prompt": "",
+                    "options": {"num_predict": 0},
+                },
+                timeout=30,
+            )
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _ollama_running_names() -> list:
+    try:
+        ps = _ollama_request("/api/ps", timeout=5)
+    except Exception:  # noqa: BLE001
+        return []
+    names = []
+    for item in ps.get("models") or []:
+        name = item.get("name") or item.get("model") or ""
+        if name:
+            names.append(name)
+    return names
 
 
 def _ollama_request(path: str, payload: Optional[dict] = None, timeout: int = 60):
@@ -2086,6 +2128,12 @@ def _model_ready(names: list, model: str) -> bool:
 
 
 def ollama_status() -> dict:
+    base = {
+        "model": OLLAMA_MODEL_LIGHT,
+        "model_light": OLLAMA_MODEL_LIGHT,
+        "model_heavy": OLLAMA_MODEL_HEAVY,
+        "keep_alive": OLLAMA_KEEP_ALIVE,
+    }
     try:
         tags = _ollama_request("/api/tags", timeout=5)
     except urllib.error.URLError as exc:
@@ -2093,18 +2141,20 @@ def ollama_status() -> dict:
             "ok": False,
             "ready": False,
             "loaded": False,
-            "model": OLLAMA_MODEL,
-            "keep_alive": OLLAMA_KEEP_ALIVE,
+            "loaded_light": False,
+            "loaded_heavy": False,
             "error": f"Ollama недоступна: {exc.reason}. Запустите ./start.sh",
+            **base,
         }
     except Exception as exc:  # noqa: BLE001
         return {
             "ok": False,
             "ready": False,
             "loaded": False,
-            "model": OLLAMA_MODEL,
-            "keep_alive": OLLAMA_KEEP_ALIVE,
+            "loaded_light": False,
+            "loaded_heavy": False,
             "error": str(exc),
+            **base,
         }
 
     names = []
@@ -2112,60 +2162,85 @@ def ollama_status() -> dict:
         name = item.get("name") or item.get("model") or ""
         if name:
             names.append(name)
-    ready = _model_ready(names, OLLAMA_MODEL)
-    loaded = False
-    if ready:
-        try:
-            ps = _ollama_request("/api/ps", timeout=5)
-            running = []
-            for item in ps.get("models") or []:
-                name = item.get("name") or item.get("model") or ""
-                if name:
-                    running.append(name)
-            loaded = _model_ready(running, OLLAMA_MODEL)
-        except Exception:  # noqa: BLE001
-            loaded = False
+    ready_light = _model_ready(names, OLLAMA_MODEL_LIGHT)
+    ready_heavy = _model_ready(names, OLLAMA_MODEL_HEAVY)
+    ready = ready_light and ready_heavy
+    running = _ollama_running_names()
+    loaded_light = _model_ready(running, OLLAMA_MODEL_LIGHT)
+    loaded_heavy = _model_ready(running, OLLAMA_MODEL_HEAVY)
+    loaded = loaded_light or loaded_heavy
+
+    error = None
+    if not ready_light:
+        error = f"Лёгкая модель не скачана: {OLLAMA_MODEL_LIGHT}"
+    elif not ready_heavy:
+        error = f"Тяжёлая модель не скачана: {OLLAMA_MODEL_HEAVY}"
 
     return {
         "ok": True,
         "ready": ready,
+        "ready_light": ready_light,
+        "ready_heavy": ready_heavy,
         "loaded": loaded,
-        "model": OLLAMA_MODEL,
-        "keep_alive": OLLAMA_KEEP_ALIVE,
+        "loaded_light": loaded_light,
+        "loaded_heavy": loaded_heavy,
         "agents": ["word", "phrase"],
         "models": names,
-        "error": None if ready else f"Модель ещё не скачана: {OLLAMA_MODEL}",
+        "error": error,
+        **base,
     }
 
 
 def ollama_warm() -> dict:
+    """Загрузить лёгкую модель в RAM (кнопки «ИИ»); тяжёлая — только при эскалации."""
+    return _ollama_warm_model(OLLAMA_MODEL_LIGHT)
+
+
+def _ollama_warm_model(model: str) -> dict:
     """Загрузить модель в RAM с keep_alive (без полноценного ответа)."""
     status = ollama_status()
     if not status.get("ok"):
         return {
             "ok": False,
             "loaded": False,
-            "model": OLLAMA_MODEL,
+            "model": model,
+            "tier": "light" if model == OLLAMA_MODEL_LIGHT else "heavy",
             "error": status.get("error") or "Ollama недоступна",
         }
-    if not status.get("ready"):
+    ready = (
+        status.get("ready_light")
+        if model == OLLAMA_MODEL_LIGHT
+        else status.get("ready_heavy")
+    )
+    if not ready:
+        label = "лёгкая" if model == OLLAMA_MODEL_LIGHT else "тяжёлая"
         return {
             "ok": False,
             "loaded": False,
-            "model": OLLAMA_MODEL,
-            "error": status.get("error") or f"Модель не скачана: {OLLAMA_MODEL}",
+            "model": model,
+            "tier": "light" if model == OLLAMA_MODEL_LIGHT else "heavy",
+            "error": status.get("error") or f"{label} модель не скачана: {model}",
         }
-    if status.get("loaded"):
+    loaded = (
+        status.get("loaded_light")
+        if model == OLLAMA_MODEL_LIGHT
+        else status.get("loaded_heavy")
+    )
+    if loaded:
         return {
             "ok": True,
             "loaded": True,
-            "model": OLLAMA_MODEL,
+            "model": model,
+            "tier": "light" if model == OLLAMA_MODEL_LIGHT else "heavy",
             "keep_alive": OLLAMA_KEEP_ALIVE,
             "error": None,
         }
 
+    if model == OLLAMA_MODEL_LIGHT:
+        ollama_unload(OLLAMA_MODEL_HEAVY)
+
     payload = {
-        "model": OLLAMA_MODEL,
+        "model": model,
         "keep_alive": OLLAMA_KEEP_ALIVE,
         "stream": False,
         "prompt": "",
@@ -2184,7 +2259,8 @@ def ollama_warm() -> dict:
     return {
         "ok": True,
         "loaded": True,
-        "model": OLLAMA_MODEL,
+        "model": model,
+        "tier": "light" if model == OLLAMA_MODEL_LIGHT else "heavy",
         "keep_alive": OLLAMA_KEEP_ALIVE,
         "error": None,
     }
@@ -2649,9 +2725,10 @@ def _chat_json(
     temperature: float,
     num_ctx: int,
     schema_props: dict,
+    model: str,
 ) -> str:
     payload = {
-        "model": OLLAMA_MODEL,
+        "model": model,
         "stream": False,
         "think": False,
         "keep_alive": OLLAMA_KEEP_ALIVE,
@@ -2710,23 +2787,43 @@ def _tutor_system_prompt() -> str:
     )
 
 
-def ollama_explain(
+def _is_bad_explain_answer(answer: str) -> bool:
+    text = (answer or "").strip()
+    if len(text) < 20:
+        return True
+    if re.search(r"[\u3040-\u30ff\u3400-\u9fff\uf900-\ufaff]+", text):
+        return True
+    latin = len(re.findall(r"[A-Za-z]", text))
+    cyr = len(re.findall(r"[А-Яа-яЁё]", text))
+    if latin > cyr * 2 and latin > 40:
+        return True
+    if re.search(
+        r"(?i)(cannot help|can't help|i'm sorry|as an ai|"
+        r"как языковая модель|не могу помочь|извините, но)",
+        text,
+    ):
+        return True
+    return False
+
+
+def _translate_needs_heavy(source: str, result: str, word_raw: Optional[str]) -> bool:
+    if word_raw and len(_normalize_phrase_key(word_raw).split()) <= 1:
+        return _is_bad_word_translation(result, word_raw)
+    return _is_bad_phrase_translation(source, result)
+
+
+def _ollama_explain_with_model(
     *,
     word: str,
     sentence: str = "",
     question: str = "",
     translation: str = "",
+    model: str,
 ) -> str:
-    """Короткий разбор слова/фразы: зачем так сказано, грамматика, идиома."""
     focus = _normalize_english_spacing(word or "")
     ctx = _normalize_english_spacing(sentence or "")
     q = (question or "").strip() or "Почему здесь так сказано? Кратко объясни."
     ru = (translation or "").strip()
-    if not focus:
-        raise ValueError("Нужно слово или фраза")
-    if len(q) > 400:
-        raise ValueError("Слишком длинный вопрос")
-
     user = (
         f"Выделение: {focus}\n"
         f"Реплика: {ctx or '(нет)'}\n"
@@ -2775,9 +2872,55 @@ def ollama_explain(
         keys=("answer",),
         num_predict=160,
         temperature=0.2,
-        num_ctx=1024,
+        num_ctx=CTX_EXPLAIN,
         schema_props={"answer": {"type": "string"}},
+        model=model,
     )
+
+
+def ollama_explain(
+    *,
+    word: str,
+    sentence: str = "",
+    question: str = "",
+    translation: str = "",
+    tier: str = "auto",
+) -> Tuple[str, str]:
+    """Короткий разбор: tier=auto (light→heavy), light, heavy (ручной)."""
+    focus = _normalize_english_spacing(word or "")
+    if not focus:
+        raise ValueError("Нужно слово или фраза")
+    if len((question or "").strip()) > 400:
+        raise ValueError("Слишком длинный вопрос")
+
+    mode = _normalize_tier(tier)
+    kwargs = {
+        "word": word,
+        "sentence": sentence,
+        "question": question,
+        "translation": translation,
+    }
+    if mode == "heavy":
+        ollama_unload(OLLAMA_MODEL_LIGHT)
+        answer = _ollama_explain_with_model(**kwargs, model=OLLAMA_MODEL_HEAVY)
+        ollama_unload(OLLAMA_MODEL_HEAVY)
+        return answer, OLLAMA_MODEL_HEAVY
+    if mode == "light":
+        ollama_unload(OLLAMA_MODEL_HEAVY)
+        answer = _ollama_explain_with_model(**kwargs, model=OLLAMA_MODEL_LIGHT)
+        return answer, OLLAMA_MODEL_LIGHT
+
+    ollama_unload(OLLAMA_MODEL_HEAVY)
+    try:
+        answer = _ollama_explain_with_model(**kwargs, model=OLLAMA_MODEL_LIGHT)
+        if not _is_bad_explain_answer(answer):
+            return answer, OLLAMA_MODEL_LIGHT
+    except Exception:
+        answer = None
+    ollama_unload(OLLAMA_MODEL_LIGHT)
+    answer = _ollama_explain_with_model(**kwargs, model=OLLAMA_MODEL_HEAVY)
+    ollama_unload(OLLAMA_MODEL_HEAVY)
+    return answer, OLLAMA_MODEL_HEAVY
 
 
 def _chat_translate(
@@ -2787,6 +2930,7 @@ def _chat_translate(
     num_predict: int,
     temperature: float,
     num_ctx: int,
+    model: str,
 ) -> str:
     """agent: 'word' | 'phrase'. Одна модель; JSON-формат — чтобы qwen3 не уходил в болтовню."""
     return _chat_json(
@@ -2796,6 +2940,7 @@ def _chat_translate(
         temperature=temperature,
         num_ctx=num_ctx,
         schema_props={"ru": {"type": "string"}},
+        model=model,
     )
 
 def _has_broader_context(target: str, sentence: Optional[str]) -> bool:
@@ -2842,19 +2987,23 @@ def _phrase_num_predict(source: str) -> int:
     return min(72, max(28, 8 + n * 4))
 
 
-def ollama_translate(text: str, *, word: Optional[str] = None, sentence: Optional[str] = None) -> str:
+def _ollama_translate_with_model(
+    text: str,
+    *,
+    word: Optional[str] = None,
+    sentence: Optional[str] = None,
+    model: str,
+) -> Tuple[str, str, Optional[str]]:
+    """Перевод через указанную модель. Возвращает (result, source_for_check, word_raw)."""
     cleaned = _normalize_english_spacing(text or "")
     if not cleaned:
-        return ""
+        return "", cleaned, None
     if len(cleaned) > 800:
         raise ValueError("Слишком длинный текст (макс. 800 символов)")
 
     word_raw = _normalize_english_spacing(word) if word else None
     sentence = _normalize_english_spacing(sentence) if sentence else sentence
 
-    # Фраза (2+ слова) с соседним cue-контекстом — переводим [[фрагмент]], не всю склейку.
-    # Выделение из середины одной реплики («stack my cash») — без span, иначе модель
-    # переводит всю строку.
     word_words = len(_normalize_phrase_key(word_raw or "").split()) if word_raw else 0
     span_mode = bool(
         word_raw
@@ -2867,11 +3016,6 @@ def ollama_translate(text: str, *, word: Optional[str] = None, sentence: Optiona
         cleaned = word_raw
         word_raw = None
 
-    cache_key = _translate_cache_key(cleaned, word_raw, sentence)
-    cached = _translate_cache_get(cache_key)
-    if cached is not None:
-        return cached
-
     source_for_check = word_raw or cleaned
 
     if span_mode:
@@ -2882,16 +3026,15 @@ def ollama_translate(text: str, *, word: Optional[str] = None, sentence: Optiona
         marked = _mark_phrase_in_context(ctx, target) if ctx else f"[[{target}]]"
         phrase_gloss = _glossary_lookup(target)
         if phrase_gloss and " " in _normalize_phrase_key(target):
-            _translate_cache_put(cache_key, phrase_gloss)
-            return phrase_gloss
+            return phrase_gloss, source_for_check, word_raw
         result = _chat_translate(
             _span_translate_messages(marked, target),
             agent="phrase",
             num_predict=_phrase_num_predict(target),
             temperature=0,
-            num_ctx=1024,
+            num_ctx=CTX_PHRASE,
+            model=model,
         )
-        # Контекст иногда ломает идиомы или «прилипает» целиком — только TARGET.
         if (
             _is_bad_phrase_translation(target, result)
             or _looks_like_context_bleed(target, ctx, result)
@@ -2901,37 +3044,37 @@ def ollama_translate(text: str, *, word: Optional[str] = None, sentence: Optiona
                 agent="phrase",
                 num_predict=_phrase_num_predict(target),
                 temperature=0,
-                num_ctx=1024,
+                num_ctx=CTX_PHRASE,
+                model=model,
             )
     elif word_raw:
         target = word_raw.strip()
         ctx = (sentence or "").strip()
         gloss = _glossary_lookup(target, ctx)
         if gloss:
-            _translate_cache_put(cache_key, gloss)
-            return gloss
+            return gloss, source_for_check, word_raw
 
-        # Без длинного контекста: prefill на CPU дешевле, меньше «заражения» матом.
         marked = f"[[{target}]]"
         result = _chat_translate(
             _word_translate_messages(marked, target),
             agent="word",
             num_predict=24,
             temperature=0,
-            num_ctx=256,
+            num_ctx=CTX_WORD,
+            model=model,
         )
         result = _normalize_word_gloss_case(result)
         if _is_bad_word_translation(result, word_raw):
             gloss = _glossary_lookup(word_raw, sentence)
             if gloss:
-                _translate_cache_put(cache_key, gloss)
-                return gloss
+                return gloss, source_for_check, word_raw
             retry = _chat_translate(
                 _strict_retry_messages(target),
                 agent="word",
                 num_predict=20,
                 temperature=0,
-                num_ctx=256,
+                num_ctx=CTX_WORD,
+                model=model,
             )
             retry = _normalize_word_gloss_case(retry)
             if not _is_bad_word_translation(retry, word_raw):
@@ -2942,20 +3085,21 @@ def ollama_translate(text: str, *, word: Optional[str] = None, sentence: Optiona
                     agent="phrase",
                     num_predict=_phrase_num_predict(word_raw),
                     temperature=0,
-                    num_ctx=1024,
+                    num_ctx=CTX_PHRASE,
+                    model=model,
                 )
     else:
         phrase_gloss = _glossary_lookup(cleaned)
         if phrase_gloss and " " in _normalize_phrase_key(cleaned):
-            _translate_cache_put(cache_key, phrase_gloss)
-            return phrase_gloss
+            return phrase_gloss, source_for_check, word_raw
 
         result = _chat_translate(
             _line_translate_messages(cleaned),
             agent="phrase",
             num_predict=_phrase_num_predict(cleaned),
             temperature=0,
-            num_ctx=1024,
+            num_ctx=CTX_PHRASE,
+            model=model,
         )
 
     if _is_bad_phrase_translation(source_for_check, result):
@@ -2964,11 +3108,91 @@ def ollama_translate(text: str, *, word: Optional[str] = None, sentence: Optiona
             agent="phrase",
             num_predict=_phrase_num_predict(source_for_check),
             temperature=0,
-            num_ctx=512,
+            num_ctx=CTX_PHRASE_STRICT,
+            model=model,
         )
 
+    return result, source_for_check, word_raw
+
+
+def ollama_translate(
+    text: str,
+    *,
+    word: Optional[str] = None,
+    sentence: Optional[str] = None,
+    tier: str = "auto",
+) -> Tuple[str, str]:
+    """tier=auto: light→heavy при плохом ответе; heavy/light — ручной режим."""
+    mode = _normalize_tier(tier)
+    cleaned = _normalize_english_spacing(text or "")
+    word_raw = _normalize_english_spacing(word) if word else None
+    sentence_norm = _normalize_english_spacing(sentence) if sentence else sentence
+    word_words = len(_normalize_phrase_key(word_raw or "").split()) if word_raw else 0
+    span_mode = bool(
+        word_raw
+        and word_words >= 2
+        and sentence_norm
+        and _has_broader_context(word_raw, sentence_norm)
+        and _is_cue_join_span(word_raw, sentence_norm)
+    )
+    cache_word = word_raw
+    cache_cleaned = cleaned
+    if word_raw and word_words >= 2 and not span_mode:
+        cache_cleaned = word_raw
+        cache_word = None
+    cache_key = _translate_cache_key(cache_cleaned, cache_word, sentence_norm)
+    if mode != "auto":
+        cache_key = f"{cache_key}|tier:{mode}"
+    cached = _translate_cache_get(cache_key)
+    if cached is not None:
+        model_cached = OLLAMA_MODEL_HEAVY if mode == "heavy" else OLLAMA_MODEL_LIGHT
+        return cached, model_cached
+
+    if mode == "heavy":
+        ollama_unload(OLLAMA_MODEL_LIGHT)
+        result, _, _ = _ollama_translate_with_model(
+            text,
+            word=word,
+            sentence=sentence,
+            model=OLLAMA_MODEL_HEAVY,
+        )
+        ollama_unload(OLLAMA_MODEL_HEAVY)
+        _translate_cache_put(cache_key, result)
+        return result, OLLAMA_MODEL_HEAVY
+
+    if mode == "light":
+        ollama_unload(OLLAMA_MODEL_HEAVY)
+        result, _, _ = _ollama_translate_with_model(
+            text,
+            word=word,
+            sentence=sentence,
+            model=OLLAMA_MODEL_LIGHT,
+        )
+        _translate_cache_put(cache_key, result)
+        return result, OLLAMA_MODEL_LIGHT
+
+    ollama_unload(OLLAMA_MODEL_HEAVY)
+    result, source_for_check, check_word = _ollama_translate_with_model(
+        text,
+        word=word,
+        sentence=sentence,
+        model=OLLAMA_MODEL_LIGHT,
+    )
+    if _translate_needs_heavy(source_for_check, result, check_word):
+        ollama_unload(OLLAMA_MODEL_LIGHT)
+        result, _, _ = _ollama_translate_with_model(
+            text,
+            word=word,
+            sentence=sentence,
+            model=OLLAMA_MODEL_HEAVY,
+        )
+        ollama_unload(OLLAMA_MODEL_HEAVY)
+        model_used = OLLAMA_MODEL_HEAVY
+    else:
+        model_used = OLLAMA_MODEL_LIGHT
+
     _translate_cache_put(cache_key, result)
-    return result
+    return result, model_used
 
 
 def google_translate(text: str) -> str:
@@ -3020,33 +3244,57 @@ def google_translate(text: str) -> str:
     return result
 
 
+def _normalize_tier(tier: Optional[str]) -> str:
+    t = (tier or "auto").strip().lower()
+    if t in ("heavy", "strong", "max", "4b", "manual"):
+        return "heavy"
+    if t in ("light", "fast", "1.7b", "min"):
+        return "light"
+    return "auto"
+
+
+def _model_tier(model: str) -> str:
+    return "heavy" if model == OLLAMA_MODEL_HEAVY else "light"
+
+
 def translate_text(
     text: str,
     *,
     word: Optional[str] = None,
     sentence: Optional[str] = None,
     engine: str = "google",
+    tier: str = "auto",
 ) -> Tuple[str, str, str]:
     """
     Возвращает (translation, provider, model).
     engine: google | ai/ollama
+    tier: auto | light | heavy (только для ai)
     """
     mode = (engine or TRANSLATE_DEFAULT_ENGINE or "google").strip().lower()
     if mode in ("ai", "ollama", "llm", "local"):
-        return ollama_translate(text, word=word, sentence=sentence), "ollama", OLLAMA_MODEL
+        translation, model = ollama_translate(
+            text, word=word, sentence=sentence, tier=tier
+        )
+        return translation, "ollama", model
 
     # Google: переводим выделенное (word) или всю реплику (text), без «прилипания» контекста.
     focus = _normalize_english_spacing(word or text or "")
     if not focus:
         focus = _normalize_english_spacing(text or "")
     if not GOOGLE_TRANSLATE_ENABLED:
-        return ollama_translate(text, word=word, sentence=sentence), "ollama", OLLAMA_MODEL
+        translation, model = ollama_translate(
+            text, word=word, sentence=sentence, tier=tier
+        )
+        return translation, "ollama", model
 
     try:
         return google_translate(focus), "google", "gtx"
     except Exception:
         # Сеть/лимиты Google — мягкий откат на локальную модель.
-        return ollama_translate(text, word=word, sentence=sentence), "ollama", OLLAMA_MODEL
+        translation, model = ollama_translate(
+            text, word=word, sentence=sentence, tier=tier
+        )
+        return translation, "ollama", model
 
 
 def _mark_phrase_in_context(context: str, phrase: str) -> str:
@@ -3121,7 +3369,20 @@ class SubLearnHandler(SimpleHTTPRequestHandler):
                 self.send_header(name, value)
         else:
             self.send_header("X-Content-Type-Options", "nosniff")
+        if parsed.path.startswith("/api/") and CORS_ORIGIN:
+            self.send_header("Access-Control-Allow-Origin", CORS_ORIGIN)
+            self.send_header("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
+            self.send_header("Access-Control-Allow-Headers", "Content-Type")
         super().end_headers()
+
+    def do_OPTIONS(self):
+        parsed = urlparse(self.path)
+        if not parsed.path.startswith("/api/") or not CORS_ORIGIN:
+            self.send_response(404)
+            self.end_headers()
+            return
+        self.send_response(204)
+        self.end_headers()
 
     def do_GET(self):
         parsed = urlparse(self.path)
@@ -3271,6 +3532,7 @@ class SubLearnHandler(SimpleHTTPRequestHandler):
             word = (params.get("word") or [""])[0].strip() or None
             sentence = (params.get("sentence") or [""])[0].strip() or None
             engine = (params.get("engine") or [TRANSLATE_DEFAULT_ENGINE])[0].strip().lower()
+            tier = (params.get("tier") or ["auto"])[0].strip().lower()
             if not text and not word:
                 self._json_response(400, {"error": "Параметр text или word обязателен"})
                 return
@@ -3280,6 +3542,7 @@ class SubLearnHandler(SimpleHTTPRequestHandler):
                     word=word,
                     sentence=sentence,
                     engine=engine,
+                    tier=tier,
                 )
                 used_word = bool(word) and not _is_long_phrase(word)
                 self._json_response(
@@ -3288,6 +3551,7 @@ class SubLearnHandler(SimpleHTTPRequestHandler):
                         "translation": translation,
                         "provider": provider,
                         "model": model,
+                        "tier": _model_tier(model) if provider == "ollama" else None,
                         "engine": engine if engine in ("google", "ai", "ollama", "llm", "local") else "google",
                         "agent": "word" if used_word and provider == "ollama" else "phrase",
                         "canRefine": provider == "google",
@@ -3373,21 +3637,24 @@ class SubLearnHandler(SimpleHTTPRequestHandler):
                 sentence = str(payload.get("sentence") or "").strip()
                 question = str(payload.get("question") or "").strip()
                 translation = str(payload.get("translation") or "").strip()
+                tier = str(payload.get("tier") or "auto").strip().lower()
                 if not word:
                     self._json_response(400, {"error": "Нужен word"})
                     return
-                answer = ollama_explain(
+                answer, model = ollama_explain(
                     word=word,
                     sentence=sentence,
                     question=question,
                     translation=translation,
+                    tier=tier,
                 )
                 self._json_response(
                     200,
                     {
                         "answer": answer,
                         "provider": "ollama",
-                        "model": OLLAMA_MODEL,
+                        "model": model,
+                        "tier": _model_tier(model),
                     },
                 )
             except ValueError as exc:
@@ -3413,7 +3680,8 @@ class SubLearnHandler(SimpleHTTPRequestHandler):
                     {
                         "ok": False,
                         "loaded": False,
-                        "model": OLLAMA_MODEL,
+                        "model": OLLAMA_MODEL_LIGHT,
+                        "tier": "light",
                         "error": f"Ollama недоступна: {exc.reason}",
                     },
                 )
@@ -3423,7 +3691,8 @@ class SubLearnHandler(SimpleHTTPRequestHandler):
                     {
                         "ok": False,
                         "loaded": False,
-                        "model": OLLAMA_MODEL,
+                        "model": OLLAMA_MODEL_LIGHT,
+                        "tier": "light",
                         "error": str(exc),
                     },
                 )
@@ -3433,7 +3702,8 @@ class SubLearnHandler(SimpleHTTPRequestHandler):
                     {
                         "ok": False,
                         "loaded": False,
-                        "model": OLLAMA_MODEL,
+                        "model": OLLAMA_MODEL_LIGHT,
+                        "tier": "light",
                         "error": str(exc),
                     },
                 )
@@ -3479,14 +3749,14 @@ class SubLearnHandler(SimpleHTTPRequestHandler):
 
 def main():
     host = os.environ.get("SUBLEARN_HOST", "127.0.0.1")
-    port = int(os.environ.get("SUBLEARN_PORT", "8765"))
+    port = int(os.environ.get("SUBLEARN_PORT") or os.environ.get("PORT", "8765"))
     init_vocab_db()
     server = ThreadingHTTPServer((host, port), SubLearnHandler)
     print(f"SubLearn: http://127.0.0.1:{port}")
     print(
         f"Translate: default={TRANSLATE_DEFAULT_ENGINE} "
         f"google={'on' if GOOGLE_TRANSLATE_ENABLED else 'off'} "
-        f"| AI Ollama {OLLAMA_URL} model={OLLAMA_MODEL}"
+        f"| AI Ollama {OLLAMA_URL} light={OLLAMA_MODEL_LIGHT} heavy={OLLAMA_MODEL_HEAVY}"
     )
     print(f"Vocab DB: {DB_PATH}")
     print("Остановка: Ctrl+C")

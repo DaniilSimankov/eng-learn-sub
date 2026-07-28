@@ -1,8 +1,15 @@
 #!/usr/bin/env bash
-# Web-модуль: ждёт Ollama, тянет модель через API, поднимает Python.
+# Web-модуль: ждёт Ollama, тянет модели через API, поднимает Python.
 set -euo pipefail
 
-MODEL="${SUBLEARN_OLLAMA_MODEL:-qwen3:4b}"
+if [[ "${SUBLEARN_OLLAMA_OPTIONAL:-0}" == "1" ]]; then
+  echo "[web] Ollama optional — starting API without local AI"
+  echo "[web] starting on :${SUBLEARN_PORT:-${PORT:-8765}}"
+  exec python3 /app/server.py
+fi
+
+MODEL_HEAVY="${SUBLEARN_OLLAMA_MODEL:-qwen3:4b}"
+MODEL_LIGHT="${SUBLEARN_OLLAMA_MODEL_LIGHT:-qwen3:1.7b}"
 OLLAMA_URL="${SUBLEARN_OLLAMA_URL:-http://ollama:11434}"
 OLLAMA_URL="${OLLAMA_URL%/}"
 
@@ -22,26 +29,34 @@ for i in $(seq 1 180); do
 done
 
 model_present() {
-  curl -sf "${OLLAMA_URL}/api/tags" | grep -Fq "${MODEL}"
+  local name="$1"
+  curl -sf "${OLLAMA_URL}/api/tags" | grep -Fq "${name}"
 }
 
-if ! model_present; then
-  echo "[web] pulling ${MODEL} via Ollama API (first run may take several minutes)..."
-  # stream:false — один JSON в конце; без CLI ollama в web-контейнере
+pull_model() {
+  local name="$1"
+  if model_present "${name}"; then
+    echo "[web] model on disk: ${name}"
+    return 0
+  fi
+  echo "[web] pulling ${name} via Ollama API (first run may take several minutes)..."
   curl -sf --max-time 3600 "${OLLAMA_URL}/api/pull" \
     -H 'Content-Type: application/json' \
-    -d "{\"name\":\"${MODEL}\",\"stream\":false}" \
-    >/tmp/ollama-pull.json \
+    -d "{\"name\":\"${name}\",\"stream\":false}" \
+    >/tmp/ollama-pull-"${name//[:/]/_}".json \
     || {
-      echo "[web] pull failed:"
-      cat /tmp/ollama-pull.json 2>/dev/null || true
+      echo "[web] pull failed for ${name}:"
+      cat "/tmp/ollama-pull-${name//[:/]/_}.json" 2>/dev/null || true
       exit 1
     }
-  if ! model_present; then
-    echo "[web] model ${MODEL} still missing after pull"
+  if ! model_present "${name}"; then
+    echo "[web] model ${name} still missing after pull"
     exit 1
   fi
-fi
+}
+
+pull_model "${MODEL_LIGHT}"
+pull_model "${MODEL_HEAVY}"
 
 # Выгрузить ВСЕ модели из RAM при старте: cold start, warm idle включается по AI/prefetch.
 python3 - "$OLLAMA_URL" <<'PY' || true
@@ -67,6 +82,6 @@ for item in tags.get("models") or []:
         print(f"[web] unload {name} skipped: {exc}")
 PY
 
-echo "[web] model on disk: ${MODEL} (cold start; warm idle 3m after AI/prefetch)"
+echo "[web] models on disk: light=${MODEL_LIGHT} heavy=${MODEL_HEAVY} (cold start; warm idle 3m after AI/prefetch)"
 echo "[web] starting on :${SUBLEARN_PORT:-8765}"
 exec python3 /app/server.py

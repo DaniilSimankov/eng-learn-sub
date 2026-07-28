@@ -19,6 +19,7 @@ const POPUP_POS_KEY = 'sublearn-popup-pos';
 const POPUP_SIZE_KEY = 'sublearn-popup-size';
 const POPUP_ASK_OPEN_KEY = 'sublearn-popup-ask-open';
 const POPUP_MODE_KEY = 'sublearn-popup-mode';
+const POPUP_AI_HEAVY_KEY = 'sublearn-popup-ai-heavy';
 const POPUP_W_MIN = 360;
 const POPUP_W_MIN_COLLAPSED = 240;
 const POPUP_W_MIN_COMPACT = 180;
@@ -73,6 +74,7 @@ const state = {
   popupPinnedSize: loadPopupSize(),
   popupAskOpen: loadPopupAskOpen(),
   popupMode: loadPopupMode(),
+  popupAiHeavy: loadPopupAiHeavy(),
   preferredVoiceURI: null,
   translationCache: new Map(),
   translationInflight: new Map(),
@@ -161,6 +163,8 @@ const popupTranslation = $('#popup-translation');
 const popupTranslationNote = $('#popup-translation-note');
 const popupRetry = $('#popup-retry');
 const popupAi = $('#popup-ai');
+const popupAiTier = $('#popup-ai-tier');
+const popupAiTierWrap = $('#popup-ai-tier-wrap');
 const popupProvider = $('#popup-provider');
 const popupContext = $('#popup-context');
 const popupAskForm = $('#popup-ask-form');
@@ -545,6 +549,8 @@ async function refreshAiStatus() {
     state.aiReady = Boolean(data.ok && data.ready);
     state.aiLoaded = Boolean(data.ok && data.ready && data.loaded);
     const keepAlive = data.keep_alive || '3m';
+    const light = data.model_light || data.model || '';
+    const heavy = data.model_heavy || '';
     if (!data.ok) {
       aiStatusEl.textContent = 'Ollama выкл';
       aiStatusEl.classList.add('is-err');
@@ -554,15 +560,17 @@ async function refreshAiStatus() {
     if (!data.ready) {
       aiStatusEl.textContent = 'модель…';
       aiStatusEl.classList.add('is-warn');
-      aiStatusEl.title = data.error || `Скачивается ${data.model}`;
+      aiStatusEl.title = data.error || `Скачиваются ${light}${heavy ? ` + ${heavy}` : ''}`;
       return;
     }
-    aiStatusEl.textContent = data.model || 'ok';
+    const loadedTier = data.loaded_heavy ? '4b' : data.loaded_light ? '1.7b' : '';
+    aiStatusEl.textContent = loadedTier || light.split(':').pop() || 'ok';
     aiStatusEl.classList.add('is-ok');
     if (state.aiLoaded) {
-      aiStatusEl.title = `Модель ${data.model} в RAM · idle ${keepAlive}`;
+      const which = data.loaded_heavy ? heavy : light;
+      aiStatusEl.title = `${which} в RAM · idle ${keepAlive}`;
     } else {
-      aiStatusEl.title = `Модель ${data.model} на диске · прогрев по клику/hover`;
+      aiStatusEl.title = `${light} (кнопки) · ${heavy} (эскалация) · прогрев по клику`;
     }
   } catch {
     state.aiReady = false;
@@ -976,7 +984,13 @@ popupAi?.addEventListener('click', (e) => {
   e.stopPropagation();
   refinePopupWithAi();
 });
-popupAi?.addEventListener('pointerenter', () => warmAiModel());
+popupAiTier?.addEventListener('change', (e) => {
+  e.stopPropagation();
+  savePopupAiHeavy(Boolean(popupAiTier.checked));
+  applyPopupAiTierUi();
+});
+popupAiTier?.addEventListener('click', (e) => e.stopPropagation());
+popupAiTierWrap?.addEventListener('click', (e) => e.stopPropagation());
 popupAskForm?.addEventListener('submit', (e) => {
   e.preventDefault();
   e.stopPropagation();
@@ -989,7 +1003,6 @@ $$('.popup__ask-chip').forEach((chip) => {
   });
 });
 popupAskInput?.addEventListener('click', (e) => e.stopPropagation());
-popupAskInput?.addEventListener('focus', () => warmAiModel());
 subtitleTranslationRetry?.addEventListener('click', (e) => {
   e.stopPropagation();
   retryInlineTranslation();
@@ -998,7 +1011,6 @@ subtitleTranslationAi?.addEventListener('click', (e) => {
   e.stopPropagation();
   refineInlineWithAi();
 });
-subtitleTranslationAi?.addEventListener('pointerenter', () => warmAiModel());
 document.addEventListener('click', (e) => {
   if (Date.now() < state.ignorePopupHideUntil) return;
   if (wordPopup.classList.contains('hidden')) return;
@@ -1569,7 +1581,7 @@ function renderSearchResults(items) {
       const list = groupItems
         .map((item) => {
       const poster = item.poster
-        ? `<img class="search-result__poster" src="/api/image?url=${encodeURIComponent(item.poster)}" alt="" loading="lazy">`
+        ? `<img class="search-result__poster" src="${SubLearnApiUrl(`/api/image?url=${encodeURIComponent(item.poster)}`)}" alt="" loading="lazy">`
         : '<div class="search-result__poster" aria-hidden="true"></div>';
       const meta = [sourceLabel(item.source), item.type, item.category].filter(Boolean).join(' · ');
       return `
@@ -2139,7 +2151,7 @@ async function loadAutoSubtitles(subtitleUrl) {
 }
 
 function streamProxyUrl(originalUrl) {
-  return `/api/stream?url=${encodeURIComponent(originalUrl)}`;
+  return SubLearnApiUrl(`/api/stream?url=${encodeURIComponent(originalUrl)}`);
 }
 
 function setupPlayerUI() {
@@ -2588,15 +2600,15 @@ function refreshInlineTranslationOnPause() {
   scheduleInlineTranslation(cue.text, state.currentCueIndex);
 }
 
-function providerLabel(provider) {
+function providerLabel(provider, tier = '') {
   if (provider === 'google') return 'Google';
-  if (provider === 'ollama') return 'ИИ';
+  if (provider === 'ollama') return tier === 'heavy' ? 'AI+' : 'AI';
   return '';
 }
 
-function setProviderBadge(el, provider) {
+function setProviderBadge(el, provider, tier = '') {
   if (!el) return;
-  const label = providerLabel(provider);
+  const label = providerLabel(provider, tier);
   if (!label) {
     el.textContent = '';
     el.classList.add('hidden');
@@ -2619,7 +2631,7 @@ function setInlineTranslation(result) {
     subtitleTranslation.textContent = text;
   }
   subtitleTranslation.classList.toggle('is-error', failed);
-  setProviderBadge(subtitleTranslationProvider, provider);
+  setProviderBadge(subtitleTranslationProvider, provider, translationTier(result));
   if (subtitleTranslationRetry) {
     subtitleTranslationRetry.classList.toggle('hidden', !failed);
   }
@@ -2627,10 +2639,10 @@ function setInlineTranslation(result) {
     const showAi = !failed && provider === 'google' && Boolean(text) && text !== '…';
     subtitleTranslationAi.classList.toggle('hidden', !showAi);
     subtitleTranslationAi.disabled = false;
-    subtitleTranslationAi.textContent = 'ИИ';
+    subtitleTranslationAi.textContent = 'AI';
     subtitleTranslationAi.title = state.aiReady
-      ? 'Уточнить перевод через локальный ИИ'
-      : 'ИИ уточнит перевод (Ollama должна быть запущена)';
+      ? 'Уточнить перевод через локальный AI'
+      : 'AI уточнит перевод (Ollama должна быть запущена)';
   }
 }
 
@@ -2659,7 +2671,7 @@ async function refineInlineWithAi() {
   if (!cue?.text) return;
   if (subtitleTranslationAi) {
     subtitleTranslationAi.disabled = true;
-    subtitleTranslationAi.textContent = 'ИИ…';
+    subtitleTranslationAi.textContent = 'AI…';
   }
   const ru = await translateText(cue.text, state.currentCueIndex, { engine: 'ai' });
   if (state.currentCueIndex >= 0 && state.cues[state.currentCueIndex]?.text === cue.text) {
@@ -2878,6 +2890,24 @@ function loadPopupMode() {
   return 'extended';
 }
 
+function loadPopupAiHeavy() {
+  return storage?.safeGet(POPUP_AI_HEAVY_KEY, '0') === '1';
+}
+
+function savePopupAiHeavy(on) {
+  state.popupAiHeavy = !!on;
+  storage?.safeSet(POPUP_AI_HEAVY_KEY, on ? '1' : '0');
+}
+
+function popupAiTierMode() {
+  return state.popupAiHeavy ? 'heavy' : 'auto';
+}
+
+function applyPopupAiTierUi() {
+  if (popupAiTier) popupAiTier.checked = !!state.popupAiHeavy;
+  popupAiTierWrap?.classList.toggle('is-on', !!state.popupAiHeavy);
+}
+
 function savePopupMode(mode) {
   state.popupMode = mode === 'compact' ? 'compact' : 'extended';
   storage?.safeSet(POPUP_MODE_KEY, state.popupMode);
@@ -3056,6 +3086,7 @@ function showPopup(word, sentence, rect) {
   popupTranslation.classList.remove('is-error');
   popupRetry?.classList.add('hidden');
   popupAi?.classList.add('hidden');
+  popupAiTierWrap?.classList.add('hidden');
   setProviderBadge(popupProvider, '');
   state.lastPopupProvider = null;
   if (popupTranslationNote) {
@@ -3064,9 +3095,9 @@ function showPopup(word, sentence, rect) {
   }
   popupContext.textContent = sentence;
   resetPopupAsk();
+  applyPopupAiTierUi();
   wordPopup.classList.remove('hidden');
   applyPopupMode(state.popupMode);
-  warmAiModel();
 
   const pinned = state.popupPinnedPos;
   if (pinned) {
@@ -3148,6 +3179,7 @@ function bindPopupAskToggle() {
 
 bindPopupAskToggle();
 applyPopupMode(state.popupMode);
+applyPopupAiTierUi();
 
 function bindPopupModeToggle() {
   if (!popupModeToggle || popupModeToggle.dataset.bound === '1') return;
@@ -3259,6 +3291,7 @@ function setPopupTranslation(raw) {
     popupTranslation.classList.add('is-error');
     popupRetry?.classList.remove('hidden');
     popupAi?.classList.add('hidden');
+    popupAiTierWrap?.classList.add('hidden');
     setProviderBadge(popupProvider, '');
     state.lastPopupProvider = null;
     if (popupTranslationNote) {
@@ -3270,20 +3303,27 @@ function setPopupTranslation(raw) {
 
   const text = translationText(raw);
   const provider = translationProvider(raw);
+  const tier = translationTier(raw);
   const { main, note } = splitTranslationNote(text);
   popupTranslation.textContent = main || text;
   popupTranslation.classList.remove('loading', 'is-error');
   popupRetry?.classList.add('hidden');
   state.lastPopupProvider = provider || null;
-  setProviderBadge(popupProvider, provider);
+  setProviderBadge(popupProvider, provider, tier);
+  const aiReady = state.aiReady && state.onlineTranslation;
   if (popupAi) {
-    const showAi = provider === 'google' && Boolean(main || text);
+    const showAi = aiReady && Boolean(main || text);
     popupAi.classList.toggle('hidden', !showAi);
     popupAi.disabled = false;
-    popupAi.textContent = 'ИИ · разбор';
-    popupAi.title = state.aiReady
-      ? 'Уточнить перевод через локальный ИИ с учётом контекста'
-      : 'ИИ уточнит перевод (Ollama должна быть запущена)';
+    popupAi.textContent = 'AI';
+    popupAi.title = state.popupAiHeavy
+      ? 'AI — режим точнее'
+      : (state.aiReady
+        ? 'Перевод через локальный AI'
+        : 'AI переведёт (Ollama должна быть запущена)');
+  }
+  if (popupAiTierWrap) {
+    popupAiTierWrap.classList.toggle('hidden', !aiReady);
   }
   if (popupTranslationNote) {
     if (note) {
@@ -3311,6 +3351,7 @@ async function retryPopupTranslation() {
   popupTranslation.classList.remove('is-error');
   popupRetry?.classList.add('hidden');
   popupAi?.classList.add('hidden');
+  popupAiTierWrap?.classList.add('hidden');
   const translation = await translateWord(word, sentence, { engine: 'google' });
   if (state.lastPopupWord?.word === word) {
     setPopupTranslation(translation);
@@ -3321,15 +3362,18 @@ async function refinePopupWithAi() {
   const current = state.lastPopupWord;
   if (!current?.word) return;
   const { word, sentence } = current;
+  const tier = popupAiTierMode();
   if (popupAi) {
     popupAi.disabled = true;
-    popupAi.textContent = 'ИИ…';
+    popupAi.textContent = 'AI…';
   }
+  if (popupAiTier) popupAiTier.disabled = true;
   popupTranslation.classList.add('loading');
-  const translation = await translateWord(word, sentence, { engine: 'ai' });
+  const translation = await translateWord(word, sentence, { engine: 'ai', tier });
   if (state.lastPopupWord?.word === word) {
     setPopupTranslation(translation);
   }
+  if (popupAiTier) popupAiTier.disabled = false;
   if (!isTranslationFailure(translation) && translationProvider(translation) === 'ollama') {
     state.aiLoaded = true;
   }
@@ -3341,12 +3385,13 @@ function resetPopupAsk() {
   if (popupAskSend) popupAskSend.disabled = false;
 }
 
-function appendAskMessage(role, text, { loading = false, error = false } = {}) {
+function appendAskMessage(role, text, { loading = false, error = false, heavy = false } = {}) {
   if (!popupAskLog) return null;
   const el = document.createElement('div');
   el.className = `popup__ask-msg popup__ask-msg--${role === 'user' ? 'user' : 'ai'}`;
   if (loading) el.classList.add('is-loading');
   if (error) el.classList.add('is-error');
+  if (heavy) el.classList.add('is-heavy');
   el.textContent = text;
   popupAskLog.appendChild(el);
   popupAskLog.scrollTop = popupAskLog.scrollHeight;
@@ -3363,14 +3408,17 @@ async function askPopupTutor(question) {
     return;
   }
 
+  const tier = popupAiTierMode();
+  const isHeavy = tier === 'heavy';
   if (popupAskInput) popupAskInput.value = '';
   appendAskMessage('user', q);
   const pending = appendAskMessage(
     'ai',
-    state.aiLoaded ? 'ИИ думает…' : 'Загрузка модели…',
-    { loading: true },
+    state.aiLoaded ? 'AI думает…' : 'Загрузка модели…',
+    { loading: true, heavy: isHeavy },
   );
   if (popupAskSend) popupAskSend.disabled = true;
+  if (popupAiTier) popupAiTier.disabled = true;
 
   try {
     const data = await api.explain({
@@ -3378,10 +3426,12 @@ async function askPopupTutor(question) {
       sentence: current.sentence || '',
       question: q,
       translation: popupTranslation?.textContent || '',
+      tier,
     });
     if (state.lastPopupWord?.word !== current.word) return;
     if (pending) {
       pending.textContent = data.answer || 'Пустой ответ';
+      pending.classList.toggle('is-heavy', data.tier === 'heavy');
       pending.classList.remove('is-loading', 'is-error');
     }
     state.aiLoaded = true;
@@ -3394,6 +3444,7 @@ async function askPopupTutor(question) {
     }
   } finally {
     if (popupAskSend) popupAskSend.disabled = false;
+    if (popupAiTier) popupAiTier.disabled = false;
     if (popupAskLog) popupAskLog.scrollTop = popupAskLog.scrollHeight;
   }
 }
@@ -3456,6 +3507,7 @@ function hidePopup() {
   wordPopup.classList.add('hidden');
   popupRetry?.classList.add('hidden');
   popupAi?.classList.add('hidden');
+  popupAiTierWrap?.classList.add('hidden');
   popupTranslation.classList.remove('is-error');
   setProviderBadge(popupProvider, '');
   state.lastPopupProvider = null;
@@ -3473,12 +3525,13 @@ function replayCurrentLine() {
   video.play();
 }
 
-async function fetchTranslation(text, { word = null, sentence = null, engine = 'google' } = {}) {
+async function fetchTranslation(text, { word = null, sentence = null, engine = 'google', tier = 'auto' } = {}) {
   try {
-    const data = await api.translate({ text, word, sentence, engine });
+    const data = await api.translate({ text, word, sentence, engine, tier });
     return {
       text: data.translation,
       provider: data.provider || engine,
+      tier: data.tier || '',
       canRefine: Boolean(data.canRefine),
     };
   } catch (err) {
@@ -3502,6 +3555,11 @@ function translationText(result) {
   if (isTranslationFailure(result)) return friendlyTranslationError(result.message);
   if (result && typeof result === 'object' && 'text' in result) return String(result.text ?? '');
   return String(result ?? '');
+}
+
+function translationTier(result) {
+  if (!result || typeof result !== 'object' || result.error) return '';
+  return String(result.tier || '');
 }
 
 function translationProvider(result) {
@@ -3553,13 +3611,13 @@ async function translateText(text, cueIndex = state.currentCueIndex, { engine = 
   return pending;
 }
 
-async function translateWord(word, sentence = '', { engine = 'google' } = {}) {
+async function translateWord(word, sentence = '', { engine = 'google', tier = 'auto' } = {}) {
   const clean = word.replace(/^['"]|['"]$/g, '');
   if (!state.onlineTranslation) {
     return { text: clean, provider: '' };
   }
   const ctx = sentence || state.lastPopupWord?.sentence || '';
-  const key = `word:v11:${engine}:${clean.toLowerCase()}:${ctx}`;
+  const key = `word:v12:${engine}:${tier}:${clean.toLowerCase()}:${ctx}`;
   if (state.translationCache.has(key)) return state.translationCache.get(key);
   if (state.translationInflight.has(key)) return state.translationInflight.get(key);
 
@@ -3569,6 +3627,7 @@ async function translateWord(word, sentence = '', { engine = 'google' } = {}) {
         word: clean,
         sentence: engine === 'ai' ? ctx : '',
         engine,
+        tier,
       });
       state.translationCache.set(key, result);
       return result;
