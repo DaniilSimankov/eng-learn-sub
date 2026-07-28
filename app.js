@@ -108,6 +108,10 @@ const btnResolve = $('#btn-resolve');
 const pageUrl = $('#page-url');
 const searchQuery = $('#search-query');
 const searchType = $('#search-type');
+const searchTypeSelect = $('#search-type-select');
+const searchTypeTrigger = $('#search-type-trigger');
+const searchTypeLabel = $('#search-type-label');
+const searchTypeOptions = $('#search-type-options');
 const btnSearch = $('#btn-search');
 const searchStatus = $('#search-status');
 const searchResults = $('#search-results');
@@ -426,6 +430,7 @@ btnSearch.addEventListener('click', () => runNewdeafSearch());
 searchQuery.addEventListener('keydown', (e) => {
   if (e.key === 'Enter') runNewdeafSearch();
 });
+initSearchTypeDropdown();
 
 $('#btn-back-setup').addEventListener('click', backToSetup);
 $('#btn-back-home')?.addEventListener('click', backToSetup);
@@ -1405,6 +1410,51 @@ async function runNewdeafSearch() {
   } finally {
     btnSearch.disabled = false;
   }
+}
+
+function initSearchTypeDropdown() {
+  if (!searchType || !searchTypeSelect || !searchTypeTrigger || !searchTypeLabel || !searchTypeOptions) return;
+
+  const optionButtons = Array.from(searchTypeOptions.querySelectorAll('.search-select__option'));
+  const closeDropdown = () => {
+    searchTypeSelect.classList.remove('is-open');
+    searchTypeTrigger.setAttribute('aria-expanded', 'false');
+    searchTypeOptions.classList.add('hidden');
+  };
+  const openDropdown = () => {
+    searchTypeSelect.classList.add('is-open');
+    searchTypeTrigger.setAttribute('aria-expanded', 'true');
+    searchTypeOptions.classList.remove('hidden');
+  };
+  const syncFromValue = (value) => {
+    const selected = optionButtons.find((btn) => btn.dataset.value === value) || optionButtons[0];
+    optionButtons.forEach((btn) => btn.classList.toggle('is-selected', btn === selected));
+    searchTypeLabel.textContent = selected?.textContent?.trim() || 'Все';
+  };
+
+  syncFromValue(searchType.value.trim());
+
+  searchTypeTrigger.addEventListener('click', () => {
+    const isOpen = searchTypeSelect.classList.contains('is-open');
+    if (isOpen) closeDropdown();
+    else openDropdown();
+  });
+
+  optionButtons.forEach((btn) => {
+    btn.addEventListener('click', () => {
+      searchType.value = btn.dataset.value || '';
+      syncFromValue(searchType.value);
+      closeDropdown();
+    });
+  });
+
+  document.addEventListener('click', (e) => {
+    if (!searchTypeSelect.contains(e.target)) closeDropdown();
+  });
+
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') closeDropdown();
+  });
 }
 
 async function resolvePageUrl(options = {}) {

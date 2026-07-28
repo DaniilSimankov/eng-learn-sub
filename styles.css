@@ -152,7 +152,7 @@ body {
 }
 
 .url-row--search {
-  flex-wrap: wrap;
+  align-items: center;
 }
 
 .search-block {
@@ -171,14 +171,96 @@ body {
   margin-bottom: 0.65rem;
 }
 
-.search-type {
-  min-width: 8.5rem;
-  padding: 0.65rem 0.75rem;
-  border-radius: 8px;
+.search-select {
+  position: relative;
+  min-width: 9.5rem;
+  flex: 0 0 auto;
+}
+
+.search-select__trigger {
+  width: 100%;
+  min-height: 2.4rem;
+  padding: 0.5rem 2rem 0.5rem 0.7rem;
   border: 1px solid var(--border);
+  border-radius: 8px;
   background: var(--surface);
   color: var(--text);
-  font-size: 0.9rem;
+  font-size: 0.88rem;
+  cursor: pointer;
+  text-align: left;
+  transition: border-color 0.15s ease, background 0.15s ease;
+  position: relative;
+}
+
+.search-select__trigger::after {
+  content: "";
+  position: absolute;
+  right: 0.9rem;
+  top: 50%;
+  width: 6px;
+  height: 6px;
+  border-right: 2px solid var(--text-muted);
+  border-bottom: 2px solid var(--text-muted);
+  transform: translateY(-65%) rotate(45deg);
+  pointer-events: none;
+}
+
+.search-select__trigger:hover {
+  border-color: rgba(108, 140, 255, 0.45);
+  background: rgba(108, 140, 255, 0.08);
+}
+
+.search-select.is-open .search-select__trigger,
+.search-select__trigger:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px rgba(108, 140, 255, 0.22);
+}
+
+.search-select__options {
+  position: absolute;
+  top: calc(100% + 0.35rem);
+  left: 0;
+  right: 0;
+  z-index: 20;
+  list-style: none;
+  margin: 0;
+  padding: 0.35rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  box-shadow: var(--shadow);
+}
+
+.search-select__option {
+  width: 100%;
+  border: 0;
+  border-radius: 6px;
+  padding: 0.45rem 0.55rem;
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+  font-size: 0.88rem;
+  cursor: pointer;
+}
+
+.search-select__option:hover {
+  background: rgba(108, 140, 255, 0.14);
+}
+
+.search-select__option.is-selected {
+  background: rgba(108, 140, 255, 0.22);
+  color: #dce3ff;
+}
+
+@media (max-width: 640px) {
+  .url-row--search {
+    flex-wrap: wrap;
+  }
+
+  .search-select {
+    min-width: 7.5rem;
+  }
 }
 
 .search-results {

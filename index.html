@@ -36,7 +36,27 @@
             <p class="hint hint--search">Зеркало по сегодняшней дате. DNS-запросы к NewDeaf — через Cloudflare 1.1.1.1 (DoH). Это не скрывает ваш IP от сайта; только обход DNS провайдера.</p>
             <div class="url-row url-row--search">
               <input type="search" id="search-query" class="url-input" placeholder="Название сериала или фильма…" maxlength="30" minlength="2" autocomplete="off">
-              <select id="search-type" class="search-type" title="Тип контента">
+              <div class="search-select" id="search-type-select">
+                <button
+                  type="button"
+                  id="search-type-trigger"
+                  class="search-select__trigger"
+                  aria-haspopup="listbox"
+                  aria-expanded="false"
+                  aria-controls="search-type-options"
+                  title="Тип контента"
+                >
+                  <span id="search-type-label">Сериалы</span>
+                </button>
+                <ul id="search-type-options" class="search-select__options hidden" role="listbox" aria-label="Тип контента">
+                  <li><button type="button" class="search-select__option" data-value="">Все</button></li>
+                  <li><button type="button" class="search-select__option is-selected" data-value="serial">Сериалы</button></li>
+                  <li><button type="button" class="search-select__option" data-value="film">Фильмы</button></li>
+                  <li><button type="button" class="search-select__option" data-value="multfilm">Мультфильмы</button></li>
+                  <li><button type="button" class="search-select__option" data-value="anime">Аниме</button></li>
+                </ul>
+              </div>
+              <select id="search-type" class="search-type hidden" title="Тип контента" tabindex="-1" aria-hidden="true">
                 <option value="">Все</option>
                 <option value="serial" selected>Сериалы</option>
                 <option value="film">Фильмы</option>
