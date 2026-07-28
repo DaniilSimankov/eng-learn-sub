@@ -2560,7 +2560,7 @@ function applyPopupMode(mode = state.popupMode, { reposition = false } = {}) {
   if (popupModeToggle) {
     popupModeToggle.title = isCompact ? 'Расширенный режим' : 'Компактный режим';
     popupModeToggle.setAttribute('aria-label', popupModeToggle.title);
-    popupModeToggle.textContent = isCompact ? '⛶' : '▫';
+    popupModeToggle.textContent = isCompact ? 'Подробнее' : 'Компактно';
   }
 
   if (isCompact) {
