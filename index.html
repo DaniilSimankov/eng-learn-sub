@@ -78,6 +78,17 @@
             <button type="button" id="btn-resolve" class="btn btn--primary">Загрузить</button>
           </div>
           <p id="resolve-status" class="status-text"></p>
+          <div class="source-auth hidden">
+            <h3 class="source-auth__title">Авторизация источника</h3>
+            <p class="hint hint--search">Для защищенных страниц можно выполнить вход. Данные используются только для текущей сессии и не сохраняются.</p>
+            <div class="url-row source-auth__row">
+              <input type="text" id="source-auth-login" class="url-input" placeholder="Логин" autocomplete="username">
+              <input type="password" id="source-auth-password" class="url-input" placeholder="Пароль" autocomplete="current-password">
+              <button type="button" id="btn-source-auth" class="btn btn--ghost">Войти</button>
+              <button type="button" id="btn-source-auth-clear" class="btn btn--ghost">Сбросить</button>
+            </div>
+            <p id="source-auth-status" class="status-text"></p>
+          </div>
           <div id="resolved-info" class="resolved-info hidden">
             <div class="resolved-info__title" id="resolved-title"></div>
             <div id="resolved-source-id" class="resolved-source hidden">

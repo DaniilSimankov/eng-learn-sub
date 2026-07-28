@@ -104,6 +104,12 @@ const subsNameUrl = $('#subs-name-url');
 const btnStart = $('#btn-start');
 const btnStartUrl = $('#btn-start-url');
 const btnResolve = $('#btn-resolve');
+const sourceAuthBlock = $('.source-auth');
+const sourceAuthLoginInput = $('#source-auth-login');
+const sourceAuthPasswordInput = $('#source-auth-password');
+const btnSourceAuth = $('#btn-source-auth');
+const btnSourceAuthClear = $('#btn-source-auth-clear');
+const sourceAuthStatus = $('#source-auth-status');
 const pageUrl = $('#page-url');
 const searchQuery = $('#search-query');
 const searchType = $('#search-type');
@@ -428,6 +434,11 @@ btnResolve.addEventListener('click', () => resolvePageUrl());
 pageUrl.addEventListener('keydown', (e) => {
   if (e.key === 'Enter') resolvePageUrl();
 });
+btnSourceAuth?.addEventListener('click', () => sourceAuthLogin());
+btnSourceAuthClear?.addEventListener('click', () => sourceAuthClear());
+sourceAuthPasswordInput?.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') sourceAuthLogin();
+});
 btnSearch.addEventListener('click', () => runCatalogSearch());
 searchQuery.addEventListener('keydown', (e) => {
   if (e.key === 'Enter') runCatalogSearch();
@@ -435,6 +446,7 @@ searchQuery.addEventListener('keydown', (e) => {
 initSearchTypeDropdown();
 initSeriesDropdown();
 initEpisodeDropdown();
+setSourceAuthVisible(false);
 
 $('#btn-back-setup').addEventListener('click', backToSetup);
 $('#btn-back-home')?.addEventListener('click', backToSetup);
@@ -1490,14 +1502,27 @@ function renderSearchResults(items) {
     return;
   }
 
+  const sourceLabel = (source) => (source === 'catalog_b' ? 'Каталог 2' : 'Каталог 1');
+  const grouped = items.reduce((acc, item) => {
+    const key = item.source || 'catalog_a';
+    if (!acc[key]) acc[key] = [];
+    acc[key].push(item);
+    return acc;
+  }, {});
+  const groupOrder = ['catalog_a', 'catalog_b'];
+
   // В setup нужен явный список кликабельных результатов,
   // т.к. селект серии находится в заголовке плеера.
-  searchResults.innerHTML = items
-    .map((item) => {
+  searchResults.innerHTML = groupOrder
+    .filter((key) => grouped[key]?.length)
+    .map((key) => {
+      const groupItems = grouped[key];
+      const list = groupItems
+        .map((item) => {
       const poster = item.poster
         ? `<img class="search-result__poster" src="/api/image?url=${encodeURIComponent(item.poster)}" alt="" loading="lazy">`
         : '<div class="search-result__poster" aria-hidden="true"></div>';
-      const meta = [item.type, item.category].filter(Boolean).join(' · ');
+      const meta = [sourceLabel(item.source), item.type, item.category].filter(Boolean).join(' · ');
       return `
         <li>
           <button type="button" class="search-result" data-url="${escapeHtml(item.url)}" data-title="${escapeHtml(item.title)}">
@@ -1508,11 +1533,21 @@ function renderSearchResults(items) {
             </span>
           </button>
         </li>`;
+        })
+        .join('');
+      return `
+        <li class="search-results__group">
+          <div class="search-results__group-title">${sourceLabel(key)}</div>
+          <ul class="search-results__group-list">${list}</ul>
+        </li>`;
     })
     .join('');
   searchResults.classList.remove('hidden');
 
-  setSeriesOptions(items.map((item) => ({ title: item.title, url: item.url })), items[0]?.url || '');
+  setSeriesOptions(
+    items.map((item) => ({ title: `[${sourceLabel(item.source)}] ${item.title}`, url: item.url })),
+    items[0]?.url || ''
+  );
 
   searchResults.querySelectorAll('.search-result').forEach((btn) => {
     btn.addEventListener('click', () => {
@@ -1640,6 +1675,7 @@ async function resolvePageUrl(options = {}) {
       || sorted.find((p) => p.available !== false && p.streamUrl)
       || sorted.find((p) => p.available !== false)
       || null;
+    setSourceAuthVisible(false);
 
     resolvedTitle.textContent = data.title;
 
@@ -1735,10 +1771,13 @@ async function resolvePageUrl(options = {}) {
     }
   } catch (err) {
     state.resolved = null;
+    state.selectedPlayer = null;
     resolvedInfo.classList.add('hidden');
     resolvedSourceId.classList.add('hidden');
     setEpisodeOptions([]);
+    setSourceAuthVisible(true);
     setStatus(err.message, true);
+    updateStartUrlButton();
   } finally {
     btnResolve.disabled = false;
   }
@@ -1748,6 +1787,64 @@ function setStatus(text, isError = false, isOk = false) {
   resolveStatus.textContent = text;
   resolveStatus.classList.toggle('is-error', isError);
   resolveStatus.classList.toggle('is-ok', isOk);
+}
+
+function setSourceAuthStatus(text, isError = false, isOk = false) {
+  if (!sourceAuthStatus) return;
+  sourceAuthStatus.textContent = text || '';
+  sourceAuthStatus.classList.toggle('is-error', isError);
+  sourceAuthStatus.classList.toggle('is-ok', isOk);
+}
+
+function setSourceAuthVisible(visible) {
+  if (!sourceAuthBlock) return;
+  sourceAuthBlock.classList.toggle('hidden', !visible);
+}
+
+async function sourceAuthLogin() {
+  const login = sourceAuthLoginInput?.value?.trim() || '';
+  const password = sourceAuthPasswordInput?.value || '';
+  if (!login || !password) {
+    setSourceAuthStatus('Введите логин и пароль', true);
+    return;
+  }
+  if (btnSourceAuth) btnSourceAuth.disabled = true;
+  if (btnSourceAuthClear) btnSourceAuthClear.disabled = true;
+  setSourceAuthStatus('Выполняем авторизацию…');
+  try {
+    const verifyUrl = pageUrl?.value?.trim() || '';
+    const data = await api.sourceAuthLogin({
+      source: 'catalog_b',
+      login,
+      password,
+      verifyUrl,
+    });
+    setSourceAuthStatus(data?.message || 'Авторизация выполнена', false, !!data?.ok);
+    if (data?.ok && verifyUrl) {
+      await resolvePageUrl();
+    }
+  } catch (err) {
+    setSourceAuthStatus(err.message || 'Ошибка авторизации', true);
+  } finally {
+    if (sourceAuthPasswordInput) sourceAuthPasswordInput.value = '';
+    if (btnSourceAuth) btnSourceAuth.disabled = false;
+    if (btnSourceAuthClear) btnSourceAuthClear.disabled = false;
+  }
+}
+
+async function sourceAuthClear() {
+  if (btnSourceAuth) btnSourceAuth.disabled = true;
+  if (btnSourceAuthClear) btnSourceAuthClear.disabled = true;
+  try {
+    await api.sourceAuthClear();
+    if (sourceAuthPasswordInput) sourceAuthPasswordInput.value = '';
+    setSourceAuthStatus('Сессия источника очищена', false, true);
+  } catch (err) {
+    setSourceAuthStatus(err.message || 'Не удалось очистить сессию', true);
+  } finally {
+    if (btnSourceAuth) btnSourceAuth.disabled = false;
+    if (btnSourceAuthClear) btnSourceAuthClear.disabled = false;
+  }
 }
 
 async function loadSubsFile(file, labelEl) {

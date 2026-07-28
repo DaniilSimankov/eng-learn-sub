@@ -32,6 +32,12 @@
       if (type) params.set('type', type);
       return requestJson(`/api/search?${params.toString()}`);
     },
+    sourceAuthLogin: (payload) => requestJson('/api/source-auth', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    }),
+    sourceAuthClear: () => requestJson('/api/source-auth', { method: 'DELETE' }),
     resolvePage: (url) => requestJson(`/api/resolve?url=${encodeURIComponent(url)}`),
     loadSubtitles: (url) => requestText(`/api/subtitles?url=${encodeURIComponent(url)}`),
     explain: (payload) => requestJson('/api/explain', {

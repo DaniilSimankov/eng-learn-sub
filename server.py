@@ -6,6 +6,7 @@ from typing import Optional, Tuple
 from zoneinfo import ZoneInfo
 import html
 import http.client
+import http.cookiejar
 import ipaddress
 import json
 import os
@@ -42,6 +43,8 @@ _SSL_CONTEXT = ssl.create_default_context()
 _ad_skip_script: Optional[str] = None
 _TRANSLATE_CACHE_MAX = 512
 _translate_cache: OrderedDict[str, str] = OrderedDict()
+_source_auth_lock = threading.Lock()
+_fanseries_cookie_jar = http.cookiejar.CookieJar()
 USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
     "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
@@ -87,7 +90,13 @@ EMBED_HOSTS = (
     "interkh.com",
     "zombie-film.com",
 )
-ALLOWED_PAGE_SUFFIXES = (".newdeaf.co",)
+ALLOWED_PAGE_SUFFIXES = (
+    ".newdeaf.co",
+    ".1fanserials.org",
+    ".1fanserials.online",
+    ".1fanserials.com",
+    ".fanserial.me",
+)
 NEWDEAF_TZ = ZoneInfo(os.environ.get("SUBLEARN_NEWDEAF_TZ", "Europe/Moscow"))
 NEWDEAF_DNS_MODE = os.environ.get("SUBLEARN_NEWDEAF_DNS", "cloudflare").strip().lower()
 DOH_GOOGLE_URL = "https://dns.google/resolve"
@@ -95,6 +104,17 @@ DOH_CLOUDFLARE_URL = "https://cloudflare-dns.com/dns-query"
 NEWDEAF_MONTHS = (
     "jan", "feb", "mar", "apr", "may", "jun",
     "jul", "aug", "sep", "oct", "nov", "dec",
+)
+FANSERIES_MIRROR_HOSTS = tuple(
+    host
+    for host in (
+        item.strip().lower().rstrip(".")
+        for item in os.environ.get(
+            "SUBLEARN_FANSERIES_MIRRORS",
+            "1fanserials.org,1fanserials.online,1fanserials.com,fanserial.me",
+        ).split(",")
+    )
+    if host
 )
 NEWDEAF_CATEGORY_FROM_PATH = {
     "serial": "Сериал",
@@ -113,6 +133,11 @@ SEARCH_TITLE_LINK_RE = re.compile(
 SEARCH_TYPE_RE = re.compile(r"<span>Тип:</span>\s*([^<\n]+)", re.IGNORECASE)
 SEARCH_POSTER_RE = re.compile(r'data-src="([^"]+)"', re.IGNORECASE)
 SEARCH_TOTAL_RE = re.compile(r"найдено:\s*(\d+)", re.IGNORECASE)
+FANSERIES_TYPE_FROM_PATH = {
+    "series": "serial",
+    "films": "film",
+    "anime": "anime",
+}
 RELATED_SECTION_RE = re.compile(
     r'<section[^>]*class="[^"]*\bpmovie__related\b[^"]*"[^>]*>(.*?)</section>',
     re.IGNORECASE | re.DOTALL,
@@ -126,6 +151,10 @@ RELATED_TITLE_RE = re.compile(
     re.IGNORECASE | re.DOTALL,
 )
 HREF_RE = re.compile(r'href="([^"]+)"', re.IGNORECASE)
+CDN_DATA_ITEM_RE = re.compile(
+    r"window\.cdnData\[\d+\]\s*=\s*(\{.*?\});",
+    re.IGNORECASE | re.DOTALL,
+)
 MEDIA_CDN_SUFFIXES = (
     ".ceramet.net",
     ".cloudfront.net",
@@ -353,6 +382,19 @@ def validate_media_url(url: str) -> str:
     raise SecurityError("URL медиа не из доверенного списка CDN")
 
 
+def validate_image_url(url: str) -> str:
+    url = url.strip()
+    _assert_public_target(url)
+    host = _normalize_host(urlparse(url).hostname or "")
+    if (
+        _host_matches_embed(host)
+        or _host_matches_suffix(host, MEDIA_CDN_SUFFIXES)
+        or _host_matches_suffix(host, ALLOWED_PAGE_SUFFIXES)
+    ):
+        return url
+    raise SecurityError("URL изображения не из доверенного списка")
+
+
 def _newdeaf_today() -> date:
     return datetime.now(NEWDEAF_TZ).date()
 
@@ -369,6 +411,16 @@ def current_newdeaf_base(day: Optional[date] = None) -> str:
 def is_newdeaf_url(url: str) -> bool:
     host = _normalize_host(urlparse(url).hostname or "")
     return host == "newdeaf.co" or host.endswith(".newdeaf.co")
+
+
+def is_fanseries_url(url: str) -> bool:
+    host = _normalize_host(urlparse(url).hostname or "")
+    if not host:
+        return False
+    for mirror_host in FANSERIES_MIRROR_HOSTS:
+        if host == mirror_host or host.endswith(f".{mirror_host}"):
+            return True
+    return False
 
 
 def rewrite_newdeaf_mirror(url: str, day: Optional[date] = None) -> str:
@@ -394,11 +446,164 @@ def _newdeaf_mirror_candidates() -> list[date]:
     return [today, today - timedelta(days=1), today + timedelta(days=1)]
 
 
-def fetch_url(url: str, timeout: int = 20) -> str:
+def _fanseries_mirror_candidates(url: str) -> list[str]:
+    parsed = urlparse(url.strip())
+    current_host = _normalize_host(parsed.hostname or "")
+    candidates: list[str] = []
+    ordered_hosts: list[str] = []
+    if current_host:
+        ordered_hosts.append(current_host)
+    for host in FANSERIES_MIRROR_HOSTS:
+        if host not in ordered_hosts:
+            ordered_hosts.append(host)
+    for host in ordered_hosts:
+        candidate = urlunparse(
+            (parsed.scheme or "https", host, parsed.path, parsed.params, parsed.query, parsed.fragment)
+        )
+        if candidate not in candidates:
+            candidates.append(candidate)
+    return candidates
+
+
+def current_fanseries_base() -> str:
+    host = FANSERIES_MIRROR_HOSTS[0] if FANSERIES_MIRROR_HOSTS else "1fanserials.org"
+    return f"https://{host}"
+
+
+def fetch_url(
+    url: str,
+    timeout: int = 20,
+    opener: Optional[urllib.request.OpenerDirector] = None,
+) -> str:
     req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+    if opener is not None:
+        with opener.open(req, timeout=timeout) as resp:
+            charset = resp.headers.get_content_charset() or "utf-8"
+            return resp.read().decode(charset, errors="replace")
     with urllib.request.urlopen(req, timeout=timeout, context=_SSL_CONTEXT) as resp:
         charset = resp.headers.get_content_charset() or "utf-8"
         return resp.read().decode(charset, errors="replace")
+
+
+def _fanseries_opener() -> urllib.request.OpenerDirector:
+    return urllib.request.build_opener(
+        urllib.request.HTTPSHandler(context=_SSL_CONTEXT),
+        urllib.request.HTTPCookieProcessor(_fanseries_cookie_jar),
+    )
+
+
+def clear_fanseries_auth_session() -> None:
+    with _source_auth_lock:
+        _fanseries_cookie_jar.clear()
+
+
+def login_fanseries_source(login: str, password: str, verify_url: str = "") -> dict:
+    login = (login or "").strip()
+    password = (password or "").strip()
+    if not login or not password:
+        raise ValueError("Нужны логин и пароль")
+
+    base = current_fanseries_base().rstrip("/")
+    login_page_url = f"{base}/index.php?do=login"
+    with _source_auth_lock:
+        opener = _fanseries_opener()
+        login_page = fetch_url(login_page_url, timeout=20, opener=opener)
+
+        form_match = re.search(
+            r"<form[^>]*action=\"([^\"]*)\"[^>]*class=\"[^\"]*form-login[^\"]*\"[^>]*>(.*?)</form>",
+            login_page,
+            re.IGNORECASE | re.DOTALL,
+        )
+        if not form_match:
+            raise ValueError("Не удалось найти форму входа на источнике")
+
+        action = html.unescape((form_match.group(1) or "").strip()) or "/"
+        form_html = form_match.group(2) or ""
+        post_url = urljoin(base + "/", action.lstrip("/"))
+
+        payload_data: dict[str, str] = {}
+        for name, value in re.findall(
+            r"<input[^>]+name=\"([^\"]+)\"[^>]*value=\"([^\"]*)\"[^>]*>",
+            form_html,
+            re.IGNORECASE | re.DOTALL,
+        ):
+            payload_data[name] = html.unescape(value or "")
+
+        login_hash_match = re.search(
+            r"var\s+dle_login_hash\s*=\s*'([^']+)'",
+            login_page,
+            re.IGNORECASE,
+        )
+        if login_hash_match and "login_hash" not in payload_data:
+            payload_data["login_hash"] = login_hash_match.group(1)
+
+        payload_data["login_name"] = login
+        payload_data["login_password"] = password
+        payload_data.setdefault("login", "submit")
+        payload_data.setdefault("do", "login")
+
+        payload = urlencode(payload_data).encode("utf-8")
+        req = urllib.request.Request(
+            post_url,
+            data=payload,
+            method="POST",
+            headers={
+                "User-Agent": USER_AGENT,
+                "Content-Type": "application/x-www-form-urlencoded",
+                "Origin": base,
+                "Referer": login_page_url,
+            },
+        )
+        with opener.open(req, timeout=20):
+            pass
+
+    verify_target = (verify_url or "").strip()
+    if verify_target:
+        verify_target = validate_page_url(verify_target)
+        if not is_fanseries_url(verify_target):
+            raise ValueError("Для проверки нужен URL поддерживаемого источника")
+    else:
+        verify_target = f"{base}/69-euphoria.html"
+
+    auth_required = True
+    try:
+        page = fetch_fanseries_page(verify_target, timeout=20)
+        episode_candidates = extract_episode_page_candidates(page, verify_target, limit=5)
+        path = (urlparse(verify_target).path or "").lower()
+        is_episode_url = bool(
+            re.search(r"/\d+-season/\d+-episode\.html$", path)
+            or re.search(r"/\d+-sezon/\d+-seriya\.html$", path)
+        )
+
+        # Для карточки сериала считаем валидацию успешной только по страницам эпизодов.
+        if not is_episode_url and episode_candidates:
+            check_targets = episode_candidates
+        else:
+            check_targets = [verify_target]
+            for episode_url in episode_candidates:
+                if episode_url not in check_targets:
+                    check_targets.append(episode_url)
+
+        for target in check_targets:
+            try:
+                target_page = page if target == verify_target else fetch_fanseries_page(target, timeout=20)
+            except (urllib.error.URLError, SecurityError):
+                continue
+            if not page_requires_auth(target_page):
+                auth_required = False
+                break
+    except (urllib.error.URLError, SecurityError):
+        auth_required = True
+
+    return {
+        "ok": not auth_required,
+        "verified": not auth_required,
+        "message": (
+            "Авторизация выполнена, доступ к защищенной странице подтвержден."
+            if not auth_required
+            else "Авторизация не подтверждена. Проверьте логин/пароль или попробуйте другой URL."
+        ),
+    }
 
 
 def _https_connect_via_ip(conn: http.client.HTTPSConnection, ip: str, host: str) -> None:
@@ -482,6 +687,31 @@ def fetch_newdeaf_page(url: str, timeout: int = 20) -> str:
     if last_error:
         raise last_error
     raise urllib.error.URLError("Не удалось загрузить страницу источника")
+
+
+def fetch_fanseries_page(url: str, timeout: int = 20) -> str:
+    if not is_fanseries_url(url):
+        return fetch_url(url, timeout=timeout)
+    last_error: Optional[Exception] = None
+    for candidate in _fanseries_mirror_candidates(url):
+        try:
+            validated = validate_page_url(candidate)
+            with _source_auth_lock:
+                opener = _fanseries_opener()
+                return fetch_url(validated, timeout=timeout, opener=opener)
+        except (urllib.error.URLError, SecurityError) as exc:
+            last_error = exc
+    if last_error:
+        raise last_error
+    raise urllib.error.URLError("Не удалось загрузить страницу источника")
+
+
+def _category_from_fanseries_url(url: str) -> Optional[str]:
+    path = (urlparse(url).path or "").strip("/").lower()
+    if not path:
+        return None
+    first = path.split("/", 1)[0]
+    return FANSERIES_TYPE_FROM_PATH.get(first)
 
 
 def _category_from_newdeaf_url(url: str) -> Optional[str]:
@@ -663,8 +893,173 @@ def search_newdeaf(
     }
 
 
+def search_fanseries(
+    query: str,
+    content_type: str = "",
+    limit: int = 15,
+) -> dict:
+    query = (query or "").strip()
+    if len(query) < 2:
+        raise ValueError("Запрос должен быть не короче 2 символов")
+    if len(query) > 30:
+        query = query[:30]
+    limit = max(1, min(int(limit), 30))
+    content_type = (content_type or "").strip().lower()
+    if content_type and content_type not in NEWDEAF_CATEGORY_FROM_PATH:
+        raise ValueError("type должен быть serial, film, multfilm или anime")
+
+    def _normalize_text(value: str) -> str:
+        value = clean_text(value or "").lower()
+        value = re.sub(r"\s+", " ", value)
+        return value.strip()
+
+    last_error: Optional[Exception] = None
+    mirror_base = ""
+    page_html = ""
+    base_template = f"{current_fanseries_base()}/"
+    for candidate_base in _fanseries_mirror_candidates(base_template):
+        mirror_base = f"{urlparse(candidate_base).scheme}://{urlparse(candidate_base).netloc}"
+        try:
+            page_html = fetch_fanseries_page(candidate_base, timeout=15)
+            if "newscatalog-main" in page_html and "newscatalog-list" in page_html:
+                break
+            raise ValueError("Каталог не найден в разметке источника")
+        except (urllib.error.URLError, SecurityError, ValueError) as exc:
+            last_error = exc
+            page_html = ""
+            continue
+    else:
+        if last_error:
+            raise urllib.error.URLError(str(last_error))
+        raise urllib.error.URLError("Не удалось выполнить поиск по каталогу")
+
+    query_norm = _normalize_text(query)
+    results: list[dict] = []
+    seen = set()
+    item_re = re.compile(
+        r"<li[^>]*class=\"literal__item[^\"]*\"[^>]*>(.*?)</li>",
+        re.IGNORECASE | re.DOTALL,
+    )
+    link_re = re.compile(r"<a[^>]+href=\"([^\"]+)\"[^>]*>(.*?)</a>", re.IGNORECASE | re.DOTALL)
+    poster_re = re.compile(r"<img[^>]+src=\"([^\"]+)\"", re.IGNORECASE)
+
+    for block in item_re.findall(page_html):
+        link_match = link_re.search(block)
+        if not link_match:
+            continue
+
+        raw_url = html.unescape(link_match.group(1)).strip()
+        title = clean_text(link_match.group(2) or "").strip()
+        if not raw_url or not title:
+            continue
+
+        title_norm = _normalize_text(title)
+        if query_norm and query_norm not in title_norm:
+            continue
+
+        if raw_url.startswith("//"):
+            raw_url = f"https:{raw_url}"
+        elif raw_url.startswith("/"):
+            raw_url = urljoin(mirror_base + "/", raw_url.lstrip("/"))
+        try:
+            url = validate_page_url(raw_url)
+        except SecurityError:
+            continue
+        if url in seen:
+            continue
+        seen.add(url)
+
+        category = _category_from_fanseries_url(url) or ""
+        if content_type and category and category != content_type:
+            continue
+
+        poster = ""
+        poster_match = poster_re.search(block)
+        if poster_match:
+            poster = html.unescape(poster_match.group(1) or "").strip()
+            if poster.startswith("//"):
+                poster = f"https:{poster}"
+            elif poster.startswith("/"):
+                poster = urljoin(mirror_base + "/", poster.lstrip("/"))
+            elif not poster.startswith("http"):
+                poster = urljoin(mirror_base + "/", poster)
+
+        results.append(
+            {
+                "title": title,
+                "url": url,
+                "category": category,
+                "poster": poster,
+                "source": "catalog_b",
+            }
+        )
+
+    return {
+        "query": query,
+        "mirror": mirror_base,
+        "total": len(results),
+        "results": results[:limit],
+    }
+
+
+def search_catalog(query: str, content_type: str = "", limit: int = 15) -> dict:
+    query = (query or "").strip()
+    limit = max(1, min(int(limit), 30))
+    sources = {}
+    combined = []
+    seen_urls = set()
+    errors = []
+
+    try:
+        a = search_newdeaf(query, content_type, limit)
+        sources["catalog_a"] = {"ok": True, "mirror": a.get("mirror", ""), "total": a.get("total", 0)}
+        for item in a.get("results", []):
+            url = item.get("url")
+            if not url or url in seen_urls:
+                continue
+            seen_urls.add(url)
+            item = dict(item)
+            item["source"] = "catalog_a"
+            combined.append(item)
+    except Exception as exc:  # noqa: BLE001
+        errors.append(exc)
+        sources["catalog_a"] = {"ok": False, "error": str(exc)}
+
+    try:
+        b = search_fanseries(query, content_type, limit)
+        sources["catalog_b"] = {"ok": True, "mirror": b.get("mirror", ""), "total": b.get("total", 0)}
+        for item in b.get("results", []):
+            url = item.get("url")
+            if not url or url in seen_urls:
+                continue
+            seen_urls.add(url)
+            combined.append(item)
+    except Exception as exc:  # noqa: BLE001
+        errors.append(exc)
+        sources["catalog_b"] = {"ok": False, "error": str(exc)}
+
+    if not combined and errors:
+        raise urllib.error.URLError("Оба каталога недоступны")
+
+    return {
+        "query": query,
+        "total": len(combined),
+        "results": combined[:limit],
+        "sources": sources,
+    }
+
+
 def fetch_binary(url: str, timeout: int = 30) -> Tuple[bytes, str]:
     validate_media_url(url)
+    req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+    with urllib.request.urlopen(req, timeout=timeout, context=_SSL_CONTEXT) as resp:
+        data = resp.read()
+        ctype = resp.headers.get("Content-Type") or "application/octet-stream"
+        return data, ctype
+
+
+def fetch_image_binary(url: str, timeout: int = 20) -> Tuple[bytes, str]:
+    url = validate_image_url(url)
     req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
     with urllib.request.urlopen(req, timeout=timeout, context=_SSL_CONTEXT) as resp:
         data = resp.read()
@@ -728,6 +1123,105 @@ def extract_players(page: str) -> list[str]:
             ordered.append(url)
             break
     return ordered
+
+
+def merge_player_urls(iframe_urls: list[str], cdn_players: list[dict]) -> list[str]:
+    merged_urls: list[str] = []
+    seen_urls = set()
+    # Сначала источники с субтитрами, затем остальные, затем iframe из HTML.
+    for item in sorted(cdn_players or [], key=lambda p: (not p.get("isSubtitles"), p.get("label") or "")):
+        u = item.get("url") or ""
+        if u and u not in seen_urls:
+            seen_urls.add(u)
+            merged_urls.append(u)
+    for u in iframe_urls or []:
+        if u and u not in seen_urls:
+            seen_urls.add(u)
+            merged_urls.append(u)
+    return merged_urls
+
+
+def extract_episode_page_candidates(page: str, page_url: str, limit: int = 10) -> list[str]:
+    candidates: list[str] = []
+    seen = set()
+    for raw in HREF_RE.findall(page or ""):
+        href = html.unescape((raw or "").strip())
+        if not href:
+            continue
+        if href.startswith("//"):
+            href = f"https:{href}"
+        elif href.startswith("/"):
+            href = urljoin(page_url, href)
+        elif not href.startswith("http"):
+            href = urljoin(page_url, href)
+        try:
+            href = validate_page_url(href)
+        except SecurityError:
+            continue
+        path = (urlparse(href).path or "").lower().rstrip("/")
+        is_episode = re.search(r"/\d+-season/\d+-episode\.html$", path) or re.search(
+            r"/\d+-sezon/\d+-seriya\.html$",
+            path,
+        )
+        if not is_episode:
+            continue
+        if href in seen:
+            continue
+        seen.add(href)
+        candidates.append(href)
+        if len(candidates) >= max(1, limit):
+            break
+    return candidates
+
+
+def page_requires_auth(page: str) -> bool:
+    haystack = (page or "").lower()
+    return (
+        "требуется вход в систему" in haystack
+        or "для доступа к видеоконтенту необходимо иметь учётную запись" in haystack
+        or "для доступа к видеоконтенту необходимо иметь учетную запись" in haystack
+    )
+
+
+def extract_cdn_players(page: str, page_url: str) -> list[dict]:
+    """Достаёт плееры из window.cdnData (если есть на странице)."""
+    if not page:
+        return []
+    result: list[dict] = []
+    seen = set()
+    for match in CDN_DATA_ITEM_RE.finditer(page):
+        raw = (match.group(1) or "").strip()
+        if not raw:
+            continue
+        try:
+            item = json.loads(raw)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(item, dict):
+            continue
+        player = html.unescape(str(item.get("player") or "")).strip()
+        if not player:
+            continue
+        if player.startswith("//"):
+            player = f"https:{player}"
+        elif player.startswith("/"):
+            player = urljoin(page_url, player)
+        host = _normalize_host(urlparse(player).hostname or "")
+        if not host or not _host_matches_embed(host):
+            continue
+        if player in seen:
+            continue
+        seen.add(player)
+        name = clean_text(str(item.get("name") or "")).strip()
+        is_subtitles = "субтит" in name.lower() or "subtitle" in name.lower()
+        result.append(
+            {
+                "url": player,
+                "label": name or "Источник",
+                "isSubtitles": is_subtitles,
+            }
+        )
+    return result
 
 
 def parse_ylitron_ref(url: str) -> Optional[dict]:
@@ -1246,13 +1740,19 @@ def build_player_entry(index: int, iframe_url: str) -> dict:
 def resolve_page(url: str) -> dict:
     url = url.strip()
     is_newdeaf = is_newdeaf_url(url)
+    is_fanseries = is_fanseries_url(url)
     if is_newdeaf:
         url = rewrite_newdeaf_mirror(url)
         _assert_newdeaf_target(url)
     else:
         url = validate_page_url(url)
     parsed = urlparse(url)
-    fetch_page = fetch_newdeaf_page if is_newdeaf else fetch_url
+    if is_newdeaf:
+        fetch_page = fetch_newdeaf_page
+    elif is_fanseries:
+        fetch_page = fetch_fanseries_page
+    else:
+        fetch_page = fetch_url
 
     page_title = ""
     series_options: list[dict] = []
@@ -1292,32 +1792,39 @@ def resolve_page(url: str) -> dict:
         if not any(item.get("url") == url for item in series_options):
             series_options.insert(0, current_item)
     iframe_urls = extract_players(page_html)
+    cdn_players = extract_cdn_players(page_html, url)
+    iframe_urls = merge_player_urls(iframe_urls, cdn_players)
+
+    # Для карточек сериалов некоторых каталогов плеер может быть только на странице эпизода.
+    auth_required_detected = page_requires_auth(page_html)
+    if not iframe_urls and is_fanseries:
+        for episode_url in extract_episode_page_candidates(page_html, url, limit=10):
+            try:
+                episode_html = fetch_page(episode_url)
+            except urllib.error.URLError:
+                continue
+            if page_requires_auth(episode_html):
+                auth_required_detected = True
+            episode_iframes = extract_players(episode_html)
+            episode_cdn = extract_cdn_players(episode_html, episode_url)
+            merged_episode_urls = merge_player_urls(episode_iframes, episode_cdn)
+            if not merged_episode_urls:
+                continue
+            url = episode_url
+            page_html = episode_html
+            page_title = extract_title(episode_html) or page_title
+            iframe_urls = merged_episode_urls
+            break
     if not iframe_urls:
+        if auth_required_detected:
+            raise ValueError(
+                "Источник требует авторизацию для доступа к плееру. "
+                "Выполните вход и повторите попытку или вставьте прямую ссылку на поток."
+            )
         raise ValueError(
             "На странице не найден плеер. Вставьте ссылку на страницу "
             "с поддерживаемым источником или прямую ссылку iframe."
         )
-
-    # Предпочитаем первый плеер с идентификатором источника.
-    found = find_ylitron_player(iframe_urls)
-    if found:
-        ylitron_url, ref = found
-        entry = build_player_entry(1, ylitron_url)
-        entry["label"] = f"Источник {ref['ylitronPath']}"
-        episode_options: list[dict] = []
-        try:
-            embed_html = fetch_url(ylitron_url)
-            episode_options = parse_ylitron_episode_options(embed_html)
-        except Exception:  # noqa: BLE001
-            episode_options = []
-        return {
-            "title": page_title,
-            "sourceUrl": url,
-            "players": [entry],
-            "seriesOptions": series_options,
-            "episodeOptions": episode_options,
-            **ref,
-        }
 
     players = []
     with ThreadPoolExecutor(max_workers=min(3, len(iframe_urls))) as pool:
@@ -1328,13 +1835,34 @@ def resolve_page(url: str) -> dict:
         players = [future.result() for future in futures]
     players.sort(key=lambda item: item["index"])
 
-    return {
+    # Явно подписываем источники последовательно, чтобы в UI было
+    # "Источник 1", "Источник 2", ... и можно было пробовать разные.
+    for idx, player in enumerate(players, start=1):
+        player["label"] = f"Источник {idx}"
+
+    # Метаданные источника и опции эпизодов берём из первого подходящего
+    # iframe с id, но не ограничиваемся только им.
+    ref: dict = {}
+    episode_options: list[dict] = []
+    found = find_ylitron_player([p.get("iframeUrl", "") for p in players if p.get("iframeUrl")])
+    if found:
+        ylitron_url, ref = found
+        try:
+            embed_html = fetch_url(ylitron_url)
+            episode_options = parse_ylitron_episode_options(embed_html)
+        except Exception:  # noqa: BLE001
+            episode_options = []
+
+    result = {
         "title": page_title,
         "sourceUrl": url,
         "players": players,
         "seriesOptions": series_options,
-        "episodeOptions": [],
+        "episodeOptions": episode_options,
     }
+    if ref:
+        result.update(ref)
+    return result
 
 
 def load_ad_skip_script() -> str:
@@ -2534,7 +3062,7 @@ class SubLearnHandler(SimpleHTTPRequestHandler):
                 self._json_response(400, {"error": "Параметр q обязателен"})
                 return
             try:
-                data = search_newdeaf(query, content_type, limit)
+                data = search_catalog(query, content_type, limit)
                 self._json_response(200, data)
             except ValueError as exc:
                 self._json_response(400, {"error": str(exc)})
@@ -2618,7 +3146,7 @@ class SubLearnHandler(SimpleHTTPRequestHandler):
                 self._text_response(400, "invalid url", "text/plain")
                 return
             try:
-                body, ctype = fetch_binary(url)
+                body, ctype = fetch_image_binary(url)
                 if not ctype.lower().startswith("image/"):
                     self._text_response(415, "unsupported media type", "text/plain")
                     return
@@ -2695,6 +3223,27 @@ class SubLearnHandler(SimpleHTTPRequestHandler):
 
     def do_POST(self):
         parsed = urlparse(self.path)
+        if parsed.path == "/api/source-auth":
+            try:
+                payload = self._read_json_body()
+                source = str(payload.get("source") or "").strip().lower()
+                login = str(payload.get("login") or "").strip()
+                password = str(payload.get("password") or "").strip()
+                verify_url = str(payload.get("verifyUrl") or "").strip()
+                if source not in ("catalog_b", "source_b", "source2", "2"):
+                    self._json_response(400, {"error": "Неизвестный ID источника"})
+                    return
+                data = login_fanseries_source(login, password, verify_url=verify_url)
+                self._json_response(200, data)
+            except ValueError as exc:
+                self._json_response(400, {"error": str(exc)})
+            except SecurityError as exc:
+                self._json_response(403, {"error": str(exc)})
+            except urllib.error.URLError as exc:
+                self._json_response(502, {"error": f"Ошибка авторизации: {exc.reason}"})
+            except Exception as exc:  # noqa: BLE001
+                self._json_response(500, {"error": str(exc)})
+            return
         if parsed.path == "/api/vocab":
             try:
                 payload = self._read_json_body()
@@ -2800,6 +3349,10 @@ class SubLearnHandler(SimpleHTTPRequestHandler):
 
     def do_DELETE(self):
         parsed = urlparse(self.path)
+        if parsed.path == "/api/source-auth":
+            clear_fanseries_auth_session()
+            self._json_response(200, {"ok": True})
+            return
         if parsed.path == "/api/vocab":
             params = parse_qs(parsed.query)
             try:
