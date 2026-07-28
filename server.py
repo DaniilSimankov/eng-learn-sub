@@ -38,8 +38,9 @@ USER_AGENT = (
     "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 )
 
-IFRAME_RE = re.compile(
-    r'<iframe[^>]*class="[^"]*newdeaf-video[^"]*"[^>]*(?:src|data-src)=["\']([^"\']+)["\']',
+IFRAME_TAG_RE = re.compile(r"<iframe\b[^>]*>", re.IGNORECASE)
+IFRAME_SRC_ATTR_RE = re.compile(
+    r"""(?:src|data-src)\s*=\s*["']([^"']+)["']""",
     re.IGNORECASE,
 )
 YLITRON_ID_RE = re.compile(
@@ -265,14 +266,21 @@ def extract_title(page: str) -> str:
 
 
 def extract_players(page: str) -> list[str]:
-    urls = IFRAME_RE.findall(page)
+    """Достаёт src/data-src у iframe; оставляет только embed из белого списка."""
     seen = set()
     ordered = []
-    for url in urls:
-        url = html.unescape(url.strip())
-        if url and url not in seen:
-            seen.add(url)
-            ordered.append(url)
+    for tag in IFRAME_TAG_RE.findall(page):
+        match = IFRAME_SRC_ATTR_RE.search(tag)
+        if not match:
+            continue
+        url = html.unescape(match.group(1).strip())
+        if not url or url in seen:
+            continue
+        host = _normalize_host(urlparse(url).hostname or "")
+        if not host or not _host_matches_embed(host):
+            continue
+        seen.add(url)
+        ordered.append(url)
     return ordered
 
 
