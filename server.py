@@ -42,10 +42,8 @@ USER_AGENT = (
 )
 
 IFRAME_TAG_RE = re.compile(r"<iframe\b[^>]*>", re.IGNORECASE)
-IFRAME_SRC_ATTR_RE = re.compile(
-    r"""(?:src|data-src)\s*=\s*["']([^"']+)["']""",
-    re.IGNORECASE,
-)
+IFRAME_SRC_RE = re.compile(r"""src\s*=\s*["']([^"']+)["']""", re.IGNORECASE)
+IFRAME_DATA_SRC_RE = re.compile(r"""data-src\s*=\s*["']([^"']+)["']""", re.IGNORECASE)
 YLITRON_ID_RE = re.compile(
     r'(?:https?:)?//(?:www\.)?ylitron\.pro/(sie|tvb)/(\d+)',
     re.IGNORECASE,
@@ -77,6 +75,7 @@ EMBED_HOSTS = (
     "cdnlbox.club",
     "ylitron.pro",
     "lomont.site",
+    "gencit.info",
     "ortified.ws",
     "vak345.com",
     "interkh.com",
@@ -109,6 +108,7 @@ SEARCH_TYPE_RE = re.compile(r"<span>Тип:</span>\s*([^<\n]+)", re.IGNORECASE)
 SEARCH_POSTER_RE = re.compile(r'data-src="([^"]+)"', re.IGNORECASE)
 SEARCH_TOTAL_RE = re.compile(r"найдено:\s*(\d+)", re.IGNORECASE)
 MEDIA_CDN_SUFFIXES = (
+    ".ceramet.net",
     ".cloudfront.net",
     ".akamaized.net",
     ".amazonaws.com",
@@ -608,21 +608,28 @@ def extract_title(page: str) -> str:
 
 
 def extract_players(page: str) -> list[str]:
-    """Достаёт src/data-src у iframe; оставляет только embed из белого списка."""
+    """Достаёт iframe src/data-src; предпочитает src, затем data-src."""
     seen = set()
     ordered = []
     for tag in IFRAME_TAG_RE.findall(page):
-        match = IFRAME_SRC_ATTR_RE.search(tag)
-        if not match:
-            continue
-        url = html.unescape(match.group(1).strip())
-        if not url or url in seen:
-            continue
-        host = _normalize_host(urlparse(url).hostname or "")
-        if not host or not _host_matches_embed(host):
-            continue
-        seen.add(url)
-        ordered.append(url)
+        candidates = []
+        src_match = IFRAME_SRC_RE.search(tag)
+        data_src_match = IFRAME_DATA_SRC_RE.search(tag)
+        if src_match:
+            candidates.append(src_match.group(1))
+        if data_src_match:
+            candidates.append(data_src_match.group(1))
+
+        for raw_url in candidates:
+            url = html.unescape((raw_url or "").strip())
+            if not url or url in seen:
+                continue
+            host = _normalize_host(urlparse(url).hostname or "")
+            if not host or not _host_matches_embed(host):
+                continue
+            seen.add(url)
+            ordered.append(url)
+            break
     return ordered
 
 
@@ -885,6 +892,10 @@ def parse_ylitron_assets(embed_html: str) -> Optional[dict]:
 
 
 def parse_embed_assets(embed_html: str, iframe_url: str = "") -> dict:
+    generic_player_data = parse_ylitron_assets(embed_html)
+    if generic_player_data:
+        return generic_player_data
+
     if "lomont.site" in (iframe_url or "").lower():
         lomont = parse_lomont_assets(embed_html, iframe_url)
         if lomont:

@@ -1753,10 +1753,10 @@ async function startUrlPlayer() {
 
       if (state.subsFile && state.cues.length) {
         subsNameUrl.textContent = `${state.subsFile.name} (${state.cues.length} реплик)`;
-      } else if (subtitleUrl) {
-        await loadAutoSubtitles(subtitleUrl);
       } else if (state.selectedPlayer?.subtitleTracks?.length) {
         await setupSubtitleTracks();
+      } else if (subtitleUrl) {
+        await loadAutoSubtitles(subtitleUrl);
       }
 
       const hasEnglishSubs = state.cues.length && (subtitleUrl || /eng/i.test(subsNameUrl.textContent));
@@ -1803,11 +1803,12 @@ async function startUrlPlayer() {
 async function loadAutoSubtitles(subtitleUrl) {
   try {
     const res = await fetch(`/api/subtitles?url=${encodeURIComponent(subtitleUrl)}`);
-    if (!res.ok) return;
+    if (!res.ok) return false;
     const text = await res.text();
     state.cues = parseSubtitles(text, 'auto.vtt');
+    return state.cues.length > 0;
   } catch {
-    /* ignore */
+    return false;
   }
 }
 
@@ -2135,7 +2136,7 @@ function parseVtt(text) {
     let timeLineIdx = 0;
     if (!lines[0].includes('-->')) timeLineIdx = 1;
     const timeMatch = lines[timeLineIdx]?.match(
-      /(\d{1,2}:?\d{2}:\d{2}[,.]\d{3})\s*-->\s*(\d{1,2}:?\d{2}:\d{2}[,.]\d{3})/
+      /((?:\d{1,2}:)?\d{2}:\d{2}[,.]\d{3})\s*-->\s*((?:\d{1,2}:)?\d{2}:\d{2}[,.]\d{3})/
     );
     if (!timeMatch) continue;
 
