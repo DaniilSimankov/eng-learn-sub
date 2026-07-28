@@ -107,6 +107,19 @@ SEARCH_TITLE_LINK_RE = re.compile(
 SEARCH_TYPE_RE = re.compile(r"<span>Тип:</span>\s*([^<\n]+)", re.IGNORECASE)
 SEARCH_POSTER_RE = re.compile(r'data-src="([^"]+)"', re.IGNORECASE)
 SEARCH_TOTAL_RE = re.compile(r"найдено:\s*(\d+)", re.IGNORECASE)
+RELATED_SECTION_RE = re.compile(
+    r'<section[^>]*class="[^"]*\bpmovie__related\b[^"]*"[^>]*>(.*?)</section>',
+    re.IGNORECASE | re.DOTALL,
+)
+RELATED_LINK_RE = re.compile(
+    r'<a[^>]+href="([^"]+)"[^>]*>\s*(.*?)\s*</a>',
+    re.IGNORECASE | re.DOTALL,
+)
+RELATED_TITLE_RE = re.compile(
+    r"<h3[^>]*>(.*?)</h3>|<div[^>]*class=\"line-clamp\"[^>]*>(.*?)</div>",
+    re.IGNORECASE | re.DOTALL,
+)
+HREF_RE = re.compile(r'href="([^"]+)"', re.IGNORECASE)
 MEDIA_CDN_SUFFIXES = (
     ".ceramet.net",
     ".cloudfront.net",
@@ -288,7 +301,7 @@ def validate_page_url(url: str) -> str:
     if _host_matches_embed(host) or _host_matches_suffix(host, ALLOWED_PAGE_SUFFIXES):
         return url
     raise SecurityError(
-        "Разрешены только страницы с плеером Ylitron или embed из белого списка"
+        "Разрешены только страницы с поддерживаемым плеером или embed из белого списка"
     )
 
 
@@ -301,9 +314,9 @@ def _assert_newdeaf_target(url: str) -> str:
         raise SecurityError("URL с логином/паролем запрещены")
     host = _normalize_host(parsed.hostname or "")
     if not host or not (host == "newdeaf.co" or host.endswith(".newdeaf.co")):
-        raise SecurityError("URL не относится к NewDeaf")
+        raise SecurityError("URL не относится к поддерживаемому источнику")
     if not _host_matches_day_month_mirror(host):
-        raise SecurityError("Недопустимый хост зеркала NewDeaf")
+        raise SecurityError("Недопустимый хост зеркала источника")
     return url
 
 
@@ -401,7 +414,7 @@ def fetch_url_via_public_dns(url: str, provider: str, timeout: int = 20) -> str:
     parsed = urlparse(url)
     host = parsed.hostname or ""
     if parsed.scheme != "https":
-        raise SecurityError("NewDeaf доступен только по https")
+        raise SecurityError("Источник доступен только по https")
 
     path = parsed.path or "/"
     if parsed.query:
@@ -435,7 +448,7 @@ def fetch_url_via_public_dns(url: str, provider: str, timeout: int = 20) -> str:
                 conn.close()
     if last_error:
         raise last_error
-    raise urllib.error.URLError("Не удалось загрузить страницу NewDeaf через публичный DNS")
+    raise urllib.error.URLError("Не удалось загрузить страницу источника через публичный DNS")
 
 
 def _fetch_newdeaf_candidate(candidate_url: str, timeout: int = 20) -> str:
@@ -462,7 +475,7 @@ def fetch_newdeaf_page(url: str, timeout: int = 20) -> str:
             last_error = exc
     if last_error:
         raise last_error
-    raise urllib.error.URLError("Не удалось загрузить страницу NewDeaf")
+    raise urllib.error.URLError("Не удалось загрузить страницу источника")
 
 
 def _category_from_newdeaf_url(url: str) -> Optional[str]:
@@ -518,6 +531,84 @@ def parse_search_results(page_html: str, mirror_base: str) -> Tuple[int, list]:
     return total, results
 
 
+def extract_related_series(page_html: str, current_url: str) -> list[dict]:
+    section_match = RELATED_SECTION_RE.search(page_html or "")
+    if not section_match:
+        return []
+    section_html = section_match.group(1)
+    current_norm = normalize_newdeaf_href(current_url or "")
+    seen = {current_norm} if current_norm else set()
+    items: list[dict] = []
+
+    for href, inner_html in RELATED_LINK_RE.findall(section_html):
+        url = normalize_newdeaf_href(href)
+        if url.startswith("/"):
+            base = current_newdeaf_base()
+            url = urljoin(base + "/", url.lstrip("/"))
+            url = normalize_newdeaf_href(url)
+        elif url.startswith("//"):
+            url = normalize_newdeaf_href(f"https:{url}")
+        if not url or url in seen:
+            continue
+        try:
+            validate_page_url(url)
+        except SecurityError:
+            continue
+        title_match = RELATED_TITLE_RE.search(inner_html or "")
+        raw_title = (title_match.group(1) or title_match.group(2) or "").strip() if title_match else ""
+        title = clean_text(raw_title) if raw_title else ""
+        season_match = re.search(r"-(\d+)-(?:sezon|season)\b", (urlparse(url).path or "").lower())
+        if season_match and "сезон" not in title.lower():
+            title = f"{title} ({season_match.group(1)} сезон)"
+        if not title:
+            continue
+        seen.add(url)
+        items.append({"title": title, "url": url})
+
+    return items
+
+
+def _series_slug_key(url: str) -> str:
+    path = (urlparse(url).path or "").strip("/").lower()
+    match = re.search(r"/?serial/\d+-([a-z0-9-]+?)-(?:\d+-(?:sezon|season).*)$", path)
+    if not match:
+        match = re.search(r"/?serial/\d+-([a-z0-9-]+?)(?:-(?:\d+-(?:sezon|season).*)?)?$", path)
+    return (match.group(1) if match else "").strip("-")
+
+
+def extract_same_series_options(page_html: str, current_url: str, page_title: str) -> list[dict]:
+    slug_key = _series_slug_key(current_url)
+    if not slug_key:
+        return []
+    seen = set()
+    items: list[dict] = []
+    for raw in HREF_RE.findall(page_html or ""):
+        href = normalize_newdeaf_href(raw)
+        if href.startswith("/"):
+            href = normalize_newdeaf_href(urljoin(current_newdeaf_base() + "/", href.lstrip("/")))
+        elif href.startswith("//"):
+            href = normalize_newdeaf_href(f"https:{href}")
+        if not href or href in seen:
+            continue
+        if f"-{slug_key}-" not in (urlparse(href).path or "").lower():
+            continue
+        try:
+            validate_page_url(href)
+        except SecurityError:
+            continue
+        season_match = re.search(r"-(\d+)-(?:sezon|season)\b", (urlparse(href).path or "").lower())
+        if href == current_url:
+            title = page_title or "Текущая серия"
+        elif season_match:
+            title = f"{page_title} ({season_match.group(1)} сезон)"
+        else:
+            title = page_title
+        items.append({"title": title, "url": href})
+        seen.add(href)
+
+    return items
+
+
 def search_newdeaf(
     query: str,
     content_type: str = "",
@@ -551,7 +642,7 @@ def search_newdeaf(
     else:
         if last_error:
             raise last_error
-        raise urllib.error.URLError("Не удалось выполнить поиск на NewDeaf")
+        raise urllib.error.URLError("Не удалось выполнить поиск по каталогу")
 
     total, results = parse_search_results(page_html, mirror_base)
     if content_type:
@@ -634,7 +725,7 @@ def extract_players(page: str) -> list[str]:
 
 
 def parse_ylitron_ref(url: str) -> Optional[dict]:
-    """Достаёт id сериала ylitron из embed-ссылки (/sie/463 или /tvb/1178445)."""
+    """Достаёт id сериала из embed-ссылки (/sie/463 или /tvb/1178445)."""
     match = YLITRON_ID_RE.search(html.unescape(url or ""))
     if not match:
         return None
@@ -891,6 +982,87 @@ def parse_ylitron_assets(embed_html: str) -> Optional[dict]:
     }
 
 
+def parse_ylitron_episode_options(embed_html: str) -> list[dict]:
+    match = re.search(r"window\.playerData\s*=\s*(\{.*?\});", embed_html or "", re.IGNORECASE | re.DOTALL)
+    if not match:
+        return []
+    try:
+        data = json.loads(match.group(1))
+    except json.JSONDecodeError:
+        return []
+
+    request_full = ((data.get("config") or {}).get("request_full") or "").replace("\\/", "/")
+    if not request_full:
+        return []
+    parsed = urlparse(request_full)
+    base_path = parsed.path
+    params = parse_qs(parsed.query)
+    voice = (params.get("voice") or [""])[0]
+
+    serial = (data.get("playlist") or {}).get("serial") or {}
+    seasons = serial.get("list") or []
+    options: list[dict] = []
+
+    for season_idx, season_episodes in enumerate(seasons, start=1):
+        if not isinstance(season_episodes, list):
+            continue
+        for ep in season_episodes:
+            if not isinstance(ep, dict):
+                continue
+            ep_num = ep.get("num")
+            if ep_num is None:
+                continue
+            ep_int = int(ep_num)
+            spec = ep.get("spec_ep") if isinstance(ep.get("spec_ep"), dict) else None
+            if ep_int > 0:
+                label = f"{season_idx} сезон · {ep_int} серия"
+            else:
+                label = f"{season_idx} сезон · {spec.get('custom_name') or 'спецвыпуск'}"
+            query = {"season": str(season_idx), "episode": str(ep_int)}
+            if voice:
+                query["voice"] = voice
+            url = urlunparse(("https", "ylitron.pro", base_path, "", urlencode(query), ""))
+            options.append({"title": label, "url": url})
+
+    # Удаляем дубликаты ссылок, сохраняя порядок.
+    uniq: list[dict] = []
+    seen = set()
+    for item in options:
+        u = item.get("url")
+        if not u or u in seen:
+            continue
+        seen.add(u)
+        uniq.append(item)
+    return uniq
+
+
+def parse_ylitron_embed_meta(embed_html: str) -> dict:
+    match = re.search(r"window\.playerData\s*=\s*(\{.*?\});", embed_html or "", re.IGNORECASE | re.DOTALL)
+    if not match:
+        return {}
+    try:
+        data = json.loads(match.group(1))
+    except json.JSONDecodeError:
+        return {}
+    current = ((data.get("playlist") or {}).get("serial") or {}).get("current") or {}
+    serial_name = (((data.get("playlist") or {}).get("current") or {}).get("serialName") or "").strip()
+    season = current.get("season")
+    episode = current.get("episode")
+    title = serial_name
+    if title and season and episode is not None:
+        try:
+            ep_num = int(episode)
+            if ep_num > 0:
+                title = f"{title} · {int(season)} сезон {ep_num} серия"
+        except (TypeError, ValueError):
+            pass
+    return {
+        "title": title,
+        "season": season,
+        "episode": episode,
+    }
+
+
 def parse_embed_assets(embed_html: str, iframe_url: str = "") -> dict:
     generic_player_data = parse_ylitron_assets(embed_html)
     if generic_player_data:
@@ -1076,13 +1248,28 @@ def resolve_page(url: str) -> dict:
     parsed = urlparse(url)
     fetch_page = fetch_newdeaf_page if is_newdeaf else fetch_url
 
+    page_title = ""
+    series_options: list[dict] = []
+
     # Прямая ссылка на embed-плеер
     if any(host in parsed.netloc for host in EMBED_HOSTS):
         entry = build_player_entry(1, url)
+        episode_options: list[dict] = []
+        title = parsed.netloc
+        try:
+            embed_html = fetch_url(url)
+            meta = parse_ylitron_embed_meta(embed_html)
+            episode_options = parse_ylitron_episode_options(embed_html)
+            if meta.get("title"):
+                title = str(meta["title"])
+        except Exception:  # noqa: BLE001
+            pass
         result = {
-            "title": parsed.netloc,
+            "title": title,
             "sourceUrl": url,
             "players": [entry],
+            "episodeOptions": episode_options,
+            "seriesOptions": [],
         }
         ref = parse_ylitron_ref(url)
         if ref:
@@ -1090,23 +1277,39 @@ def resolve_page(url: str) -> dict:
         return result
 
     page_html = fetch_page(url)
+    page_title = extract_title(page_html)
+    series_options = extract_same_series_options(page_html, url, page_title)
+    if len(series_options) < 2:
+        series_options = extract_related_series(page_html, url)
+    if page_title:
+        current_item = {"title": page_title, "url": url}
+        if not any(item.get("url") == url for item in series_options):
+            series_options.insert(0, current_item)
     iframe_urls = extract_players(page_html)
     if not iframe_urls:
         raise ValueError(
             "На странице не найден плеер. Вставьте ссылку на страницу "
-            "с источником Ylitron или прямую ссылку iframe."
+            "с поддерживаемым источником или прямую ссылку iframe."
         )
 
-    # Предпочитаем ylitron: id со страницы, дальше ходим только туда
+    # Предпочитаем первый плеер с идентификатором источника.
     found = find_ylitron_player(iframe_urls)
     if found:
         ylitron_url, ref = found
         entry = build_player_entry(1, ylitron_url)
-        entry["label"] = f"Ylitron {ref['ylitronPath']}"
+        entry["label"] = f"Источник {ref['ylitronPath']}"
+        episode_options: list[dict] = []
+        try:
+            embed_html = fetch_url(ylitron_url)
+            episode_options = parse_ylitron_episode_options(embed_html)
+        except Exception:  # noqa: BLE001
+            episode_options = []
         return {
-            "title": extract_title(page_html),
+            "title": page_title,
             "sourceUrl": url,
             "players": [entry],
+            "seriesOptions": series_options,
+            "episodeOptions": episode_options,
             **ref,
         }
 
@@ -1120,9 +1323,11 @@ def resolve_page(url: str) -> dict:
     players.sort(key=lambda item: item["index"])
 
     return {
-        "title": extract_title(page_html),
+        "title": page_title,
         "sourceUrl": url,
         "players": players,
+        "seriesOptions": series_options,
+        "episodeOptions": [],
     }
 
 
@@ -2565,6 +2770,30 @@ class SubLearnHandler(SimpleHTTPRequestHandler):
                 self._text_response(403, str(exc), "text/plain")
             except urllib.error.URLError as exc:
                 self._text_response(502, f"subtitle error: {exc.reason}", "text/plain")
+            except Exception as exc:  # noqa: BLE001
+                self._text_response(500, str(exc), "text/plain")
+            return
+        if parsed.path == "/api/image":
+            params = parse_qs(parsed.query)
+            url = (params.get("url") or [""])[0].strip()
+            if not url:
+                self._text_response(400, "invalid url", "text/plain")
+                return
+            try:
+                body, ctype = fetch_binary(url)
+                if not ctype.lower().startswith("image/"):
+                    self._text_response(415, "unsupported media type", "text/plain")
+                    return
+                self.send_response(200)
+                self.send_header("Content-Type", ctype)
+                self.send_header("Content-Length", str(len(body)))
+                self.send_header("Cache-Control", "public, max-age=3600")
+                self.end_headers()
+                self.wfile.write(body)
+            except SecurityError as exc:
+                self._text_response(403, str(exc), "text/plain")
+            except urllib.error.URLError as exc:
+                self._text_response(502, f"image error: {exc.reason}", "text/plain")
             except Exception as exc:  # noqa: BLE001
                 self._text_response(500, str(exc), "text/plain")
             return

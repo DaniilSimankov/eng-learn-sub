@@ -112,15 +112,23 @@ const searchTypeSelect = $('#search-type-select');
 const searchTypeTrigger = $('#search-type-trigger');
 const searchTypeLabel = $('#search-type-label');
 const searchTypeOptions = $('#search-type-options');
+const seriesSelect = $('#series-select');
+const seriesTrigger = $('#series-trigger');
+const seriesLabel = $('#series-label');
+const seriesOptions = $('#series-options');
+const episodeSelect = $('#episode-select');
+const episodeTrigger = $('#episode-trigger');
+const episodeLabel = $('#episode-label');
+const episodeOptions = $('#episode-options');
 const btnSearch = $('#btn-search');
 const searchStatus = $('#search-status');
 const searchResults = $('#search-results');
 const resolveStatus = $('#resolve-status');
 const resolvedInfo = $('#resolved-info');
 const resolvedTitle = $('#resolved-title');
-const resolvedYlitron = $('#resolved-ylitron');
-const resolvedYlitronId = $('#resolved-ylitron-id');
-const resolvedYlitronPath = $('#resolved-ylitron-path');
+const resolvedSourceId = $('#resolved-source-id');
+const resolvedSourceIdValue = $('#resolved-source-id-value');
+const resolvedSourcePath = $('#resolved-source-path');
 const playerPicker = $('#player-picker');
 const setupPanel = $('#setup-panel');
 const playerSection = $('#player-section');
@@ -235,6 +243,21 @@ function writeWatchPositions(map) {
 function resolveWatchContentId() {
   if (state.mode === 'file' && state.videoFile) {
     return `file:${state.videoFile.name}:${state.videoFile.size}`;
+  }
+  const episodeUrl = state.selectedPlayer?.iframeUrl || state.resolved?.sourceUrl || pageUrl?.value?.trim() || '';
+  if (episodeUrl) {
+    try {
+      const parsed = new URL(episodeUrl, window.location.origin);
+      const season = parsed.searchParams.get('season');
+      const episode = parsed.searchParams.get('episode');
+      if (season || episode) {
+        const yId = state.resolved?.ylitronId || '';
+        const keyBase = yId ? `ylitron:${yId}` : `url:${parsed.origin}${parsed.pathname}`;
+        return `${keyBase}:s${season || '1'}:e${episode || '1'}`;
+      }
+    } catch {
+      // noop
+    }
   }
   const yId = state.resolved?.ylitronId;
   if (yId) return `ylitron:${yId}`;
@@ -426,11 +449,13 @@ btnResolve.addEventListener('click', () => resolvePageUrl());
 pageUrl.addEventListener('keydown', (e) => {
   if (e.key === 'Enter') resolvePageUrl();
 });
-btnSearch.addEventListener('click', () => runNewdeafSearch());
+btnSearch.addEventListener('click', () => runCatalogSearch());
 searchQuery.addEventListener('keydown', (e) => {
-  if (e.key === 'Enter') runNewdeafSearch();
+  if (e.key === 'Enter') runCatalogSearch();
 });
 initSearchTypeDropdown();
+initSeriesDropdown();
+initEpisodeDropdown();
 
 $('#btn-back-setup').addEventListener('click', backToSetup);
 $('#btn-back-home')?.addEventListener('click', backToSetup);
@@ -1339,21 +1364,190 @@ function setSearchStatus(text, isError = false) {
   searchStatus.classList.toggle('is-ok', !isError && !!text);
 }
 
+function closeSeriesDropdown() {
+  if (!seriesSelect || !seriesTrigger || !seriesOptions) return;
+  seriesSelect.classList.remove('is-open');
+  seriesTrigger.setAttribute('aria-expanded', 'false');
+  seriesOptions.classList.add('hidden');
+}
+
+function openSeriesDropdown() {
+  if (!seriesSelect || !seriesTrigger || !seriesOptions) return;
+  seriesSelect.classList.add('is-open');
+  seriesTrigger.setAttribute('aria-expanded', 'true');
+  seriesOptions.classList.remove('hidden');
+}
+
+function closeEpisodeDropdown() {
+  if (!episodeSelect || !episodeTrigger || !episodeOptions) return;
+  episodeSelect.classList.remove('is-open');
+  episodeTrigger.setAttribute('aria-expanded', 'false');
+  episodeOptions.classList.add('hidden');
+}
+
+function openEpisodeDropdown() {
+  if (!episodeSelect || !episodeTrigger || !episodeOptions) return;
+  episodeSelect.classList.add('is-open');
+  episodeTrigger.setAttribute('aria-expanded', 'true');
+  episodeOptions.classList.remove('hidden');
+}
+
+function initSeriesDropdown() {
+  if (!seriesSelect || !seriesTrigger || !seriesOptions) return;
+  if (seriesSelect.dataset.bound === '1') return;
+  seriesSelect.dataset.bound = '1';
+
+  seriesTrigger.addEventListener('click', () => {
+    const isOpen = seriesSelect.classList.contains('is-open');
+    if (isOpen) closeSeriesDropdown();
+    else openSeriesDropdown();
+  });
+
+  document.addEventListener('click', (e) => {
+    if (!seriesSelect.contains(e.target)) closeSeriesDropdown();
+  });
+
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') closeSeriesDropdown();
+  });
+}
+
+function initEpisodeDropdown() {
+  if (!episodeSelect || !episodeTrigger || !episodeOptions) return;
+  if (episodeSelect.dataset.bound === '1') return;
+  episodeSelect.dataset.bound = '1';
+
+  episodeTrigger.addEventListener('click', () => {
+    const isOpen = episodeSelect.classList.contains('is-open');
+    if (isOpen) closeEpisodeDropdown();
+    else openEpisodeDropdown();
+  });
+
+  document.addEventListener('click', (e) => {
+    if (!episodeSelect.contains(e.target)) closeEpisodeDropdown();
+  });
+
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') closeEpisodeDropdown();
+  });
+}
+
+function setSeriesOptions(items, selectedUrl = '') {
+  if (!seriesSelect || !seriesLabel || !seriesOptions) return;
+  const list = Array.isArray(items) ? items.filter((item) => item?.url && item?.title) : [];
+  if (!list.length) {
+    seriesOptions.innerHTML = '';
+    seriesLabel.textContent = 'Выберите серию';
+    seriesSelect.classList.add('hidden');
+    closeSeriesDropdown();
+    return;
+  }
+
+  const selected = (selectedUrl || '').trim() || list[0].url;
+  seriesOptions.innerHTML = list
+    .map((item) => {
+      const isSelected = item.url === selected ? ' is-selected' : '';
+      return `
+        <li>
+          <button type="button" class="search-select__option${isSelected}" data-url="${escapeHtml(item.url)}" data-title="${escapeHtml(item.title)}">
+            ${escapeHtml(item.title)}
+          </button>
+        </li>`;
+    })
+    .join('');
+
+  const selectedItem = list.find((item) => item.url === selected) || list[0];
+  seriesLabel.textContent = selectedItem.title;
+  seriesSelect.classList.remove('hidden');
+  closeSeriesDropdown();
+
+  const handleSelectUrl = (btn) => {
+    pageUrl.value = btn.dataset.url;
+    seriesLabel.textContent = btn.dataset.title || 'Выбрана серия';
+    seriesOptions.querySelectorAll('.search-select__option').forEach((opt) => {
+      opt.classList.toggle('is-selected', opt.dataset.url === btn.dataset.url);
+    });
+    closeSeriesDropdown();
+    savePageUrl(pageUrl.value);
+    resolvePageUrl();
+    if (!setupPanel.classList.contains('hidden')) {
+      pageUrl.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    }
+  };
+
+  seriesOptions.querySelectorAll('.search-select__option').forEach((btn) => {
+    btn.addEventListener('click', () => handleSelectUrl(btn));
+  });
+}
+
+function setEpisodeOptions(items, selectedUrl = '') {
+  if (!episodeSelect || !episodeLabel || !episodeOptions) return;
+  const list = Array.isArray(items) ? items.filter((item) => item?.url && item?.title) : [];
+  if (!list.length) {
+    episodeOptions.innerHTML = '';
+    episodeLabel.textContent = 'Выберите эпизод';
+    episodeSelect.classList.add('hidden');
+    closeEpisodeDropdown();
+    return;
+  }
+
+  const selected = (selectedUrl || '').trim();
+  const selectedItem = list.find((item) => item.url === selected) || list[0];
+  episodeOptions.innerHTML = list
+    .map((item) => {
+      const isSelected = item.url === selectedItem.url ? ' is-selected' : '';
+      return `
+        <li>
+          <button type="button" class="search-select__option${isSelected}" data-url="${escapeHtml(item.url)}" data-title="${escapeHtml(item.title)}">
+            ${escapeHtml(item.title)}
+          </button>
+        </li>`;
+    })
+    .join('');
+  episodeLabel.textContent = selectedItem.title;
+  episodeSelect.classList.remove('hidden');
+  closeEpisodeDropdown();
+
+  episodeOptions.querySelectorAll('.search-select__option').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      pageUrl.value = btn.dataset.url || '';
+      episodeLabel.textContent = btn.dataset.title || 'Выбран эпизод';
+      episodeOptions.querySelectorAll('.search-select__option').forEach((opt) => {
+        opt.classList.toggle('is-selected', opt.dataset.url === btn.dataset.url);
+      });
+      closeEpisodeDropdown();
+      savePageUrl(pageUrl.value);
+      resolvePageUrl();
+    });
+  });
+}
+
 function renderSearchResults(items) {
-  if (!items.length) {
+  if (!seriesSelect || !seriesTrigger || !seriesLabel || !seriesOptions) {
     searchResults.innerHTML = '';
     searchResults.classList.add('hidden');
     return;
   }
+
+  if (!items.length) {
+    searchResults.innerHTML = '';
+    searchResults.classList.add('hidden');
+  setSeriesOptions([]);
+  setEpisodeOptions([]);
+    return;
+  }
+
+  // В setup нужен явный список кликабельных результатов,
+  // т.к. селект серии находится в заголовке плеера.
   searchResults.innerHTML = items
     .map((item) => {
       const poster = item.poster
-        ? `<img class="search-result__poster" src="${escapeHtml(item.poster)}" alt="" loading="lazy">`
+        ? `<img class="search-result__poster" src="/api/image?url=${encodeURIComponent(item.poster)}" alt="" loading="lazy">`
         : '<div class="search-result__poster" aria-hidden="true"></div>';
       const meta = [item.type, item.category].filter(Boolean).join(' · ');
       return `
         <li>
-          <button type="button" class="search-result" data-url="${escapeHtml(item.url)}">
+          <button type="button" class="search-result" data-url="${escapeHtml(item.url)}" data-title="${escapeHtml(item.title)}">
             ${poster}
             <span class="search-result__body">
               <span class="search-result__title">${escapeHtml(item.title)}</span>
@@ -1364,17 +1558,26 @@ function renderSearchResults(items) {
     })
     .join('');
   searchResults.classList.remove('hidden');
+
+  setSeriesOptions(items.map((item) => ({ title: item.title, url: item.url })), items[0]?.url || '');
+
   searchResults.querySelectorAll('.search-result').forEach((btn) => {
     btn.addEventListener('click', () => {
       pageUrl.value = btn.dataset.url;
+      seriesLabel.textContent = btn.dataset.title || seriesLabel.textContent;
+      seriesOptions.querySelectorAll('.search-select__option').forEach((opt) => {
+        opt.classList.toggle('is-selected', opt.dataset.url === btn.dataset.url);
+      });
       savePageUrl(pageUrl.value);
       resolvePageUrl();
-      pageUrl.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      if (!setupPanel.classList.contains('hidden')) {
+        pageUrl.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      }
     });
   });
 }
 
-async function runNewdeafSearch() {
+async function runCatalogSearch() {
   const q = searchQuery.value.trim();
   if (q.length < 2) {
     setSearchStatus('Введите минимум 2 символа', true);
@@ -1383,7 +1586,7 @@ async function runNewdeafSearch() {
   }
 
   btnSearch.disabled = true;
-  setSearchStatus('Ищем на NewDeaf…');
+  setSearchStatus('Ищем...');
   renderSearchResults([]);
 
   try {
@@ -1396,14 +1599,13 @@ async function runNewdeafSearch() {
 
     const shown = data.results?.length || 0;
     const total = data.total ?? shown;
-    const mirrorHost = data.mirror ? new URL(data.mirror).host : '';
     if (!shown) {
-      setSearchStatus(`Ничего не найдено${mirrorHost ? ` (${mirrorHost})` : ''}`, true);
+      setSearchStatus('Ничего не найдено', true);
       return;
     }
     renderSearchResults(data.results);
     const tail = total > shown ? `, показано ${shown} из ${total}` : '';
-    setSearchStatus(`Найдено: ${total}${tail}${mirrorHost ? ` · ${mirrorHost}` : ''}`);
+    setSearchStatus(`Найдено: ${total}${tail}`);
   } catch (err) {
     setSearchStatus(err.message || 'Ошибка поиска', true);
     renderSearchResults([]);
@@ -1467,7 +1669,7 @@ async function resolvePageUrl(options = {}) {
   }
   savePageUrl(url);
 
-  setStatus(autoStart ? 'Восстанавливаем просмотр…' : 'Ищу Ylitron ID на странице…');
+  setStatus(autoStart ? 'Восстанавливаем просмотр…' : 'Ищу источник на странице…');
   btnResolve.disabled = true;
 
   try {
@@ -1495,22 +1697,22 @@ async function resolvePageUrl(options = {}) {
     resolvedTitle.textContent = data.title;
 
     if (data.ylitronId) {
-      resolvedYlitron.classList.remove('hidden');
-      resolvedYlitronId.textContent = data.ylitronId;
-      resolvedYlitronPath.textContent = data.ylitronPath
-        ? `(ylitron.pro${data.ylitronPath})`
+      resolvedSourceId.classList.remove('hidden');
+      resolvedSourceIdValue.textContent = data.ylitronId;
+      resolvedSourcePath.textContent = data.ylitronPath
+        ? `(источник${data.ylitronPath})`
         : '';
     } else {
-      resolvedYlitron.classList.add('hidden');
-      resolvedYlitronId.textContent = '';
-      resolvedYlitronPath.textContent = '';
+      resolvedSourceId.classList.add('hidden');
+      resolvedSourceIdValue.textContent = '';
+      resolvedSourcePath.textContent = '';
     }
 
     playerPicker.innerHTML = sorted
       .map((p) => {
         const active = p === state.selectedPlayer ? 'is-active' : '';
         const disabled = p.available === false ? 'is-disabled' : '';
-        const name = p.label || (data.ylitronId ? `Ylitron ${data.ylitronId}` : `Плеер ${p.index}`);
+        const name = p.label || `Плеер ${p.index}`;
         let badge = '<small> · только iframe</small>';
         if (p.available === false) badge = '<small> · недоступен</small>';
         else if (p.streamUrl && p.subtitleUrl) badge = '<small> · поток + субтитры ✓</small>';
@@ -1540,12 +1742,26 @@ async function resolvePageUrl(options = {}) {
     });
 
     resolvedInfo.classList.remove('hidden');
+    if (Array.isArray(data.seriesOptions) && data.seriesOptions.length) {
+      const existingSeries = seriesOptions
+        ? Array.from(seriesOptions.querySelectorAll('.search-select__option'))
+          .map((btn) => ({ title: btn.dataset.title || btn.textContent?.trim() || '', url: btn.dataset.url || '' }))
+          .filter((item) => item.url)
+        : [];
+      const merged = [...existingSeries, ...data.seriesOptions].reduce((acc, item) => {
+        if (!acc.some((x) => x.url === item.url)) acc.push(item);
+        return acc;
+      }, []);
+      setSeriesOptions(merged, data.sourceUrl || url);
+    }
+    const selectedEpisodeUrl = state.selectedPlayer?.iframeUrl || data.sourceUrl || url;
+    setEpisodeOptions(data.episodeOptions || [], selectedEpisodeUrl);
     if (data.ylitronId) {
       const ok = state.selectedPlayer?.streamUrl;
       setStatus(
         ok
-          ? `Используем Ylitron ID ${data.ylitronId} — поток берём напрямую с ylitron`
-          : `Найден Ylitron ID ${data.ylitronId}, но поток пока не открылся — попробуйте ещё раз`,
+          ? `Источник найден: ID ${data.ylitronId}. Поток подключён.`
+          : `Источник найден: ID ${data.ylitronId}, но поток пока не открылся — попробуйте ещё раз`,
         !ok,
         !!ok
       );
@@ -1553,8 +1769,8 @@ async function resolvePageUrl(options = {}) {
       const streamPlayer = data.players.find((p) => p.available !== false && p.streamUrl);
       setStatus(
         streamPlayer
-          ? `Ylitron не найден. Плеер ${streamPlayer.index} — прямой поток`
-          : 'Ylitron на странице не найден, прямой поток тоже нет.',
+          ? `Источник не определён. Плеер ${streamPlayer.index} — прямой поток`
+          : 'Источник на странице не найден, прямой поток тоже недоступен.',
         !streamPlayer,
         !!streamPlayer
       );
@@ -1562,11 +1778,15 @@ async function resolvePageUrl(options = {}) {
     updateStartUrlButton();
     if (autoStart && state.selectedPlayer) {
       await startUrlPlayer();
+    } else if (!playerSection.classList.contains('hidden') && state.selectedPlayer) {
+      // Если уже в режиме плеера (например, выбрали эпизод), переключаем сразу.
+      await startUrlPlayer();
     }
   } catch (err) {
     state.resolved = null;
     resolvedInfo.classList.add('hidden');
-    resolvedYlitron.classList.add('hidden');
+    resolvedSourceId.classList.add('hidden');
+    setEpisodeOptions([]);
     setStatus(err.message, true);
   } finally {
     btnResolve.disabled = false;
@@ -1721,7 +1941,7 @@ async function startUrlPlayer() {
   const yId = state.resolved?.ylitronId;
   const baseTitle = state.resolved?.title || 'Просмотр';
   if (yId) {
-    playerTitle.innerHTML = `${escapeHtml(baseTitle)} <span class="player-title__ylitron">· Ylitron ${escapeHtml(String(yId))}</span>`;
+    playerTitle.textContent = baseTitle;
   } else {
     playerTitle.textContent = baseTitle;
   }

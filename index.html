@@ -32,8 +32,8 @@
 
         <div id="setup-url" class="setup-mode">
           <div class="search-block">
-            <h3 class="search-block__title">Найти на NewDeaf</h3>
-            <p class="hint hint--search">Зеркало по сегодняшней дате. DNS-запросы к NewDeaf — через Cloudflare 1.1.1.1 (DoH). Это не скрывает ваш IP от сайта; только обход DNS провайдера.</p>
+            <h3 class="search-block__title">Найти серию</h3>
+            <p class="hint hint--search">Поиск по доступному каталогу. Выберите тип и введите название.</p>
             <div class="url-row url-row--search">
               <input type="search" id="search-query" class="url-input" placeholder="Название сериала или фильма…" maxlength="30" minlength="2" autocomplete="off">
               <div class="search-select" id="search-type-select">
@@ -71,19 +71,18 @@
 
           <h2>Вставьте ссылку на страницу серии</h2>
           <p class="hint">
-            Или вставьте ссылку вручную — SubLearn достанет <strong>Ylitron</strong> ID
-            и возьмёт поток с английскими субтитрами напрямую с ylitron.
+            Или вставьте ссылку вручную — приложение автоматически получит поток и субтитры, если они доступны.
           </p>
           <div class="url-row">
-            <input type="url" id="page-url" class="url-input" placeholder="https://28jul.newdeaf.co/serial/…">
+            <input type="url" id="page-url" class="url-input" placeholder="https://example.com/serial/...">
             <button type="button" id="btn-resolve" class="btn btn--primary">Загрузить</button>
           </div>
           <p id="resolve-status" class="status-text"></p>
           <div id="resolved-info" class="resolved-info hidden">
             <div class="resolved-info__title" id="resolved-title"></div>
-            <div id="resolved-ylitron" class="resolved-ylitron hidden">
-              Ylitron ID: <code id="resolved-ylitron-id"></code>
-              <span id="resolved-ylitron-path" class="resolved-ylitron__path"></span>
+            <div id="resolved-source-id" class="resolved-source hidden">
+              ID источника: <code id="resolved-source-id-value"></code>
+              <span id="resolved-source-path" class="resolved-source__path"></span>
             </div>
             <div class="player-picker" id="player-picker"></div>
           </div>
@@ -97,7 +96,7 @@
           </label>
           <label class="control control--skip-ads">
             <input type="checkbox" id="skip-ads" checked disabled>
-            Пропуск рекламы (ylitron — прямой поток без iframe-рекламы)
+            Пропуск рекламы (для встроенного плеера)
           </label>
           <div class="ai-block">
             <label class="control control--privacy">
@@ -140,6 +139,34 @@
             ← Назад
           </button>
           <div class="player-title" id="player-title"></div>
+          <div class="search-select hidden" id="series-select">
+            <button
+              type="button"
+              id="series-trigger"
+              class="search-select__trigger"
+              aria-haspopup="listbox"
+              aria-expanded="false"
+              aria-controls="series-options"
+              title="Выбор серии"
+            >
+              <span id="series-label">Выберите серию</span>
+            </button>
+            <ul id="series-options" class="search-select__options hidden" role="listbox" aria-label="Выбор серии"></ul>
+          </div>
+          <div class="search-select hidden" id="episode-select">
+            <button
+              type="button"
+              id="episode-trigger"
+              class="search-select__trigger"
+              aria-haspopup="listbox"
+              aria-expanded="false"
+              aria-controls="episode-options"
+              title="Выбор эпизода"
+            >
+              <span id="episode-label">Выберите эпизод</span>
+            </button>
+            <ul id="episode-options" class="search-select__options hidden" role="listbox" aria-label="Выбор эпизода"></ul>
+          </div>
         </div>
 
         <div class="player-stage" id="player-stage">
