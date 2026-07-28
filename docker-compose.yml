@@ -49,7 +49,9 @@ services:
     volumes:
       - vocab_data:/app/data
       - ./server.py:/app/server.py
+      - ./backend:/app/backend
       - ./app.js:/app/app.js
+      - ./frontend:/app/frontend
       - ./index.html:/app/index.html
       - ./styles.css:/app/styles.css
       - ./ad-skip.js:/app/ad-skip.js

@@ -8,6 +8,8 @@ RUN apt-get update \
 
 WORKDIR /app
 COPY server.py ad-skip.js index.html app.js styles.css ./
+COPY backend ./backend
+COPY frontend ./frontend
 COPY entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh && sed -i 's/\r$//' /entrypoint.sh
 
