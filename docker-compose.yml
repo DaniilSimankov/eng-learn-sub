@@ -65,6 +65,7 @@ services:
       SUBLEARN_PORT: "8765"
       SUBLEARN_DATA_DIR: /app/data
       SUBLEARN_NEWDEAF_DNS: cloudflare
+      SUBLEARN_FANSERIES_MIRRORS: 1fanserials.org,fanserial.me
       OLLAMA_KEEP_ALIVE: "3m"
     depends_on:
       ollama:
