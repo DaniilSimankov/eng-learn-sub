@@ -31,14 +31,31 @@
         </div>
 
         <div id="setup-url" class="setup-mode">
+          <div class="search-block">
+            <h3 class="search-block__title">Найти на NewDeaf</h3>
+            <p class="hint hint--search">Зеркало по сегодняшней дате. DNS-запросы к NewDeaf — через Cloudflare 1.1.1.1 (DoH). Это не скрывает ваш IP от сайта; только обход DNS провайдера.</p>
+            <div class="url-row url-row--search">
+              <input type="search" id="search-query" class="url-input" placeholder="Название сериала или фильма…" maxlength="30" minlength="2" autocomplete="off">
+              <select id="search-type" class="search-type" title="Тип контента">
+                <option value="">Все</option>
+                <option value="serial" selected>Сериалы</option>
+                <option value="film">Фильмы</option>
+                <option value="multfilm">Мультфильмы</option>
+                <option value="anime">Аниме</option>
+              </select>
+              <button type="button" id="btn-search" class="btn btn--ghost">Найти</button>
+            </div>
+            <p id="search-status" class="status-text"></p>
+            <ul id="search-results" class="search-results hidden"></ul>
+          </div>
+
           <h2>Вставьте ссылку на страницу серии</h2>
           <p class="hint">
-            Вставьте ссылку на страницу, где есть источник <strong>Ylitron</strong> —
-            SubLearn достанет ID и дальше берёт поток и субтитры напрямую с ylitron
-            (без остальных плееров и рекламы).
+            Или вставьте ссылку вручную — SubLearn достанет <strong>Ylitron</strong> ID
+            и возьмёт поток с английскими субтитрами напрямую с ylitron.
           </p>
           <div class="url-row">
-            <input type="url" id="page-url" class="url-input" placeholder="https://example.com/watch/episode-with-ylitron.html">
+            <input type="url" id="page-url" class="url-input" placeholder="https://28jul.newdeaf.co/serial/…">
             <button type="button" id="btn-resolve" class="btn btn--primary">Загрузить</button>
           </div>
           <p id="resolve-status" class="status-text"></p>

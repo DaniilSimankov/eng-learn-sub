@@ -106,6 +106,11 @@ const btnStart = $('#btn-start');
 const btnStartUrl = $('#btn-start-url');
 const btnResolve = $('#btn-resolve');
 const pageUrl = $('#page-url');
+const searchQuery = $('#search-query');
+const searchType = $('#search-type');
+const btnSearch = $('#btn-search');
+const searchStatus = $('#search-status');
+const searchResults = $('#search-results');
 const resolveStatus = $('#resolve-status');
 const resolvedInfo = $('#resolved-info');
 const resolvedTitle = $('#resolved-title');
@@ -416,6 +421,10 @@ btnStartUrl.addEventListener('click', () => startUrlPlayer());
 btnResolve.addEventListener('click', () => resolvePageUrl());
 pageUrl.addEventListener('keydown', (e) => {
   if (e.key === 'Enter') resolvePageUrl();
+});
+btnSearch.addEventListener('click', () => runNewdeafSearch());
+searchQuery.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') runNewdeafSearch();
 });
 
 $('#btn-back-setup').addEventListener('click', backToSetup);
@@ -1318,6 +1327,85 @@ applySubsPosition(loadSubsPosition());
 tryRestoreWatchSession();
 
 // --- URL resolve ---
+
+function setSearchStatus(text, isError = false) {
+  searchStatus.textContent = text;
+  searchStatus.classList.toggle('is-error', isError);
+  searchStatus.classList.toggle('is-ok', !isError && !!text);
+}
+
+function renderSearchResults(items) {
+  if (!items.length) {
+    searchResults.innerHTML = '';
+    searchResults.classList.add('hidden');
+    return;
+  }
+  searchResults.innerHTML = items
+    .map((item) => {
+      const poster = item.poster
+        ? `<img class="search-result__poster" src="${escapeHtml(item.poster)}" alt="" loading="lazy">`
+        : '<div class="search-result__poster" aria-hidden="true"></div>';
+      const meta = [item.type, item.category].filter(Boolean).join(' · ');
+      return `
+        <li>
+          <button type="button" class="search-result" data-url="${escapeHtml(item.url)}">
+            ${poster}
+            <span class="search-result__body">
+              <span class="search-result__title">${escapeHtml(item.title)}</span>
+              ${meta ? `<span class="search-result__meta">${escapeHtml(meta)}</span>` : ''}
+            </span>
+          </button>
+        </li>`;
+    })
+    .join('');
+  searchResults.classList.remove('hidden');
+  searchResults.querySelectorAll('.search-result').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      pageUrl.value = btn.dataset.url;
+      savePageUrl(pageUrl.value);
+      resolvePageUrl();
+      pageUrl.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    });
+  });
+}
+
+async function runNewdeafSearch() {
+  const q = searchQuery.value.trim();
+  if (q.length < 2) {
+    setSearchStatus('Введите минимум 2 символа', true);
+    renderSearchResults([]);
+    return;
+  }
+
+  btnSearch.disabled = true;
+  setSearchStatus('Ищем на NewDeaf…');
+  renderSearchResults([]);
+
+  try {
+    const params = new URLSearchParams({ q, limit: '15' });
+    const type = searchType.value.trim();
+    if (type) params.set('type', type);
+    const res = await fetch(`/api/search?${params}`);
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Ошибка поиска');
+
+    const shown = data.results?.length || 0;
+    const total = data.total ?? shown;
+    const mirrorHost = data.mirror ? new URL(data.mirror).host : '';
+    if (!shown) {
+      setSearchStatus(`Ничего не найдено${mirrorHost ? ` (${mirrorHost})` : ''}`, true);
+      return;
+    }
+    renderSearchResults(data.results);
+    const tail = total > shown ? `, показано ${shown} из ${total}` : '';
+    setSearchStatus(`Найдено: ${total}${tail}${mirrorHost ? ` · ${mirrorHost}` : ''}`);
+  } catch (err) {
+    setSearchStatus(err.message || 'Ошибка поиска', true);
+    renderSearchResults([]);
+  } finally {
+    btnSearch.disabled = false;
+  }
+}
 
 async function resolvePageUrl(options = {}) {
   const preferredPlayerIndex = options.preferredPlayerIndex;

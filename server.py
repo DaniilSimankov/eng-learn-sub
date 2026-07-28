@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
 """Локальный сервер SubLearn: статика + API для разбора страниц с плеером."""
 
+from datetime import date, datetime, timedelta
 from typing import Optional, Tuple
+from zoneinfo import ZoneInfo
 import html
+import http.client
 import ipaddress
 import json
 import os
@@ -18,7 +21,7 @@ from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import parse_qs, quote, urljoin, urlparse, urlunparse
+from urllib.parse import parse_qs, quote, urlencode, urljoin, urlparse, urlunparse
 
 ROOT = Path(__file__).resolve().parent
 DATA_DIR = Path(os.environ.get("SUBLEARN_DATA_DIR", str(ROOT / "data")))
@@ -70,6 +73,31 @@ EMBED_HOSTS = (
     "zombie-film.com",
 )
 ALLOWED_PAGE_SUFFIXES = (".newdeaf.co",)
+NEWDEAF_TZ = ZoneInfo(os.environ.get("SUBLEARN_NEWDEAF_TZ", "Europe/Moscow"))
+NEWDEAF_DNS_MODE = os.environ.get("SUBLEARN_NEWDEAF_DNS", "cloudflare").strip().lower()
+DOH_GOOGLE_URL = "https://dns.google/resolve"
+DOH_CLOUDFLARE_URL = "https://cloudflare-dns.com/dns-query"
+NEWDEAF_MONTHS = (
+    "jan", "feb", "mar", "apr", "may", "jun",
+    "jul", "aug", "sep", "oct", "nov", "dec",
+)
+NEWDEAF_CATEGORY_FROM_PATH = {
+    "serial": "Сериал",
+    "film": "Фильм",
+    "multfilm": "Мультфильм",
+    "anime": "Аниме",
+}
+SEARCH_CARD_RE = re.compile(
+    r'<article class="card d-flex">(.*?)</article>',
+    re.IGNORECASE | re.DOTALL,
+)
+SEARCH_TITLE_LINK_RE = re.compile(
+    r'<h2 class="card__title">\s*<a href="([^"]+)">(.*?)</a>',
+    re.IGNORECASE | re.DOTALL,
+)
+SEARCH_TYPE_RE = re.compile(r"<span>Тип:</span>\s*([^<\n]+)", re.IGNORECASE)
+SEARCH_POSTER_RE = re.compile(r'data-src="([^"]+)"', re.IGNORECASE)
+SEARCH_TOTAL_RE = re.compile(r"найдено:\s*(\d+)", re.IGNORECASE)
 MEDIA_CDN_SUFFIXES = (
     ".cloudfront.net",
     ".akamaized.net",
@@ -131,12 +159,67 @@ def _host_matches_embed(host: str) -> bool:
     return any(token in host for token in EMBED_HOSTS)
 
 
+def _newdeaf_dns_mode() -> str:
+    mode = (NEWDEAF_DNS_MODE or "cloudflare").lower()
+    if mode in ("off", "system", "direct", ""):
+        return "system"
+    if mode in ("google", "8.8.8.8", "8.8.4.4", "google-dns"):
+        return "google"
+    if mode in ("cloudflare", "1.1.1.1", "1.0.0.1"):
+        return "cloudflare"
+    return "cloudflare"
+
+
+def _is_newdeaf_host(host: str) -> bool:
+    host = _normalize_host(host)
+    return host == "newdeaf.co" or host.endswith(".newdeaf.co")
+
+
+def _resolve_host_via_doh(host: str, provider: str) -> list[str]:
+    host = _normalize_host(host)
+    query = urlencode({"name": host, "type": "A"})
+    doh_url = f"{DOH_GOOGLE_URL}?{query}" if provider == "google" else f"{DOH_CLOUDFLARE_URL}?{query}"
+    _assert_public_target(doh_url)
+    req = urllib.request.Request(doh_url, headers={"Accept": "application/dns-json"})
+    with urllib.request.urlopen(req, timeout=6, context=_SSL_CONTEXT) as resp:
+        payload = json.loads(resp.read().decode("utf-8"))
+
+    ips: list[str] = []
+    for item in payload.get("Answer") or []:
+        if item.get("type") not in (1, "A"):
+            continue
+        ip_str = (item.get("data") or "").strip()
+        if not ip_str:
+            continue
+        try:
+            ip = ipaddress.ip_address(ip_str)
+        except ValueError:
+            continue
+        if ip.version != 4 or ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved:
+            continue
+        if ip_str not in ips:
+            ips.append(ip_str)
+    if not ips:
+        raise SecurityError(f"DoH: нет публичных A-записей для {host}")
+    return ips
+
+
 def _resolve_public_ips(host: str) -> list[str]:
     now = time.monotonic()
     with _dns_lock:
         cached = _dns_cache.get(host)
         if cached and now - cached[0] < _DNS_TTL_SEC:
             return list(cached[1])
+
+    dns_mode = _newdeaf_dns_mode()
+    if dns_mode != "system" and _is_newdeaf_host(host):
+        try:
+            ips = _resolve_host_via_doh(host, dns_mode)
+            with _dns_lock:
+                _dns_cache[host] = (now, ips)
+            return list(ips)
+        except (urllib.error.URLError, json.JSONDecodeError, SecurityError, OSError):
+            pass
 
     try:
         infos = socket.getaddrinfo(host, None, type=socket.SOCK_STREAM)
@@ -199,6 +282,30 @@ def validate_page_url(url: str) -> str:
     )
 
 
+def _assert_newdeaf_target(url: str) -> str:
+    url = url.strip()
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https"):
+        raise SecurityError("Разрешены только http и https")
+    if parsed.username or parsed.password:
+        raise SecurityError("URL с логином/паролем запрещены")
+    host = _normalize_host(parsed.hostname or "")
+    if not host or not (host == "newdeaf.co" or host.endswith(".newdeaf.co")):
+        raise SecurityError("URL не относится к NewDeaf")
+    if not _host_matches_day_month_mirror(host):
+        raise SecurityError("Недопустимый хост зеркала NewDeaf")
+    return url
+
+
+def _host_matches_day_month_mirror(host: str) -> bool:
+    if host == "newdeaf.co":
+        return True
+    if not host.endswith(".newdeaf.co"):
+        return False
+    prefix = host[: -len(".newdeaf.co")]
+    return bool(re.fullmatch(r"\d{1,2}(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)", prefix))
+
+
 def validate_embed_url(url: str) -> str:
     url = url.strip()
     _assert_public_target(url)
@@ -217,11 +324,236 @@ def validate_media_url(url: str) -> str:
     raise SecurityError("URL медиа не из доверенного списка CDN")
 
 
+def _newdeaf_today() -> date:
+    return datetime.now(NEWDEAF_TZ).date()
+
+
+def _newdeaf_mirror_host(day: date) -> str:
+    return f"{day.day}{NEWDEAF_MONTHS[day.month - 1]}.newdeaf.co"
+
+
+def current_newdeaf_base(day: Optional[date] = None) -> str:
+    day = day or _newdeaf_today()
+    return f"https://{_newdeaf_mirror_host(day)}"
+
+
+def is_newdeaf_url(url: str) -> bool:
+    host = _normalize_host(urlparse(url).hostname or "")
+    return host == "newdeaf.co" or host.endswith(".newdeaf.co")
+
+
+def rewrite_newdeaf_mirror(url: str, day: Optional[date] = None) -> str:
+    if not is_newdeaf_url(url):
+        return url.strip()
+    day = day or _newdeaf_today()
+    parsed = urlparse(url.strip())
+    host = _newdeaf_mirror_host(day)
+    return urlunparse(
+        (parsed.scheme or "https", host, parsed.path, parsed.params, parsed.query, parsed.fragment)
+    )
+
+
+def normalize_newdeaf_href(url: str) -> str:
+    url = html.unescape((url or "").strip())
+    if is_newdeaf_url(url):
+        return rewrite_newdeaf_mirror(url)
+    return url
+
+
+def _newdeaf_mirror_candidates() -> list[date]:
+    today = _newdeaf_today()
+    return [today, today - timedelta(days=1), today + timedelta(days=1)]
+
+
 def fetch_url(url: str, timeout: int = 20) -> str:
     req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
     with urllib.request.urlopen(req, timeout=timeout, context=_SSL_CONTEXT) as resp:
         charset = resp.headers.get_content_charset() or "utf-8"
         return resp.read().decode(charset, errors="replace")
+
+
+def _https_connect_via_ip(conn: http.client.HTTPSConnection, ip: str, host: str) -> None:
+    conn.sock = socket.create_connection((ip, conn.port or 443), conn.timeout)
+    conn.sock = conn._context.wrap_socket(conn.sock, server_hostname=host)
+
+
+def _decode_http_body(body: bytes, content_type: str) -> str:
+    charset = "utf-8"
+    if content_type:
+        match = re.search(r"charset=([\w-]+)", content_type, re.IGNORECASE)
+        if match:
+            charset = match.group(1)
+    return body.decode(charset, errors="replace")
+
+
+def fetch_url_via_public_dns(url: str, provider: str, timeout: int = 20) -> str:
+    url = _assert_newdeaf_target(url)
+    parsed = urlparse(url)
+    host = parsed.hostname or ""
+    if parsed.scheme != "https":
+        raise SecurityError("NewDeaf доступен только по https")
+
+    path = parsed.path or "/"
+    if parsed.query:
+        path = f"{path}?{parsed.query}"
+
+    last_error: Optional[Exception] = None
+    for ip in _resolve_host_via_doh(host, provider):
+        conn: Optional[http.client.HTTPSConnection] = None
+        try:
+            conn = http.client.HTTPSConnection(host, timeout=timeout, context=_SSL_CONTEXT)
+            ip_addr = ip
+            conn.connect = lambda c=conn, addr=ip_addr, h=host: _https_connect_via_ip(c, addr, h)
+            conn.request(
+                "GET",
+                path,
+                headers={
+                    "User-Agent": USER_AGENT,
+                    "Accept": "text/html,application/xhtml+xml,*/*",
+                    "Host": host,
+                },
+            )
+            resp = conn.getresponse()
+            body = resp.read()
+            if resp.status >= 400:
+                raise urllib.error.HTTPError(url, resp.status, resp.reason, resp.headers, body)
+            return _decode_http_body(body, resp.getheader("Content-Type", ""))
+        except Exception as exc:  # noqa: BLE001
+            last_error = exc
+        finally:
+            if conn is not None:
+                conn.close()
+    if last_error:
+        raise last_error
+    raise urllib.error.URLError("Не удалось загрузить страницу NewDeaf через публичный DNS")
+
+
+def _fetch_newdeaf_candidate(candidate_url: str, timeout: int = 20) -> str:
+    _assert_newdeaf_target(candidate_url)
+    dns_mode = _newdeaf_dns_mode()
+    if dns_mode != "system":
+        try:
+            return fetch_url_via_public_dns(candidate_url, dns_mode, timeout=timeout)
+        except (urllib.error.URLError, SecurityError, OSError, http.client.HTTPException):
+            pass
+    return fetch_url(validate_page_url(candidate_url), timeout=timeout)
+
+
+def fetch_newdeaf_page(url: str, timeout: int = 20) -> str:
+    if not is_newdeaf_url(url):
+        return fetch_url(url, timeout=timeout)
+
+    last_error: Optional[Exception] = None
+    for day in _newdeaf_mirror_candidates():
+        candidate = rewrite_newdeaf_mirror(url, day)
+        try:
+            return _fetch_newdeaf_candidate(candidate, timeout=timeout)
+        except (urllib.error.URLError, SecurityError) as exc:
+            last_error = exc
+    if last_error:
+        raise last_error
+    raise urllib.error.URLError("Не удалось загрузить страницу NewDeaf")
+
+
+def _category_from_newdeaf_url(url: str) -> Optional[str]:
+    path = urlparse(url).path.strip("/").lower()
+    if not path:
+        return None
+    segment = path.split("/", 1)[0]
+    return segment if segment in NEWDEAF_CATEGORY_FROM_PATH else None
+
+
+def parse_search_results(page_html: str, mirror_base: str) -> Tuple[int, list]:
+    total_match = SEARCH_TOTAL_RE.search(page_html)
+    total = int(total_match.group(1)) if total_match else 0
+    results = []
+    seen_urls = set()
+
+    for block in SEARCH_CARD_RE.findall(page_html):
+        title_match = SEARCH_TITLE_LINK_RE.search(block)
+        if not title_match:
+            continue
+        href = html.unescape(title_match.group(1).strip())
+        title = clean_text(title_match.group(2))
+        if not href or not title:
+            continue
+
+        if href.startswith("/"):
+            href = urljoin(mirror_base + "/", href.lstrip("/"))
+        elif href.startswith("//"):
+            href = f"https:{href}"
+        href = normalize_newdeaf_href(href)
+
+        if href in seen_urls:
+            continue
+        seen_urls.add(href)
+
+        type_match = SEARCH_TYPE_RE.search(block)
+        kind_label = clean_text(type_match.group(1)) if type_match else ""
+        category = _category_from_newdeaf_url(href) or ""
+
+        poster_match = SEARCH_POSTER_RE.search(block)
+        poster = html.unescape(poster_match.group(1).strip()) if poster_match else None
+
+        results.append(
+            {
+                "title": title,
+                "url": href,
+                "type": kind_label,
+                "category": category,
+                "poster": poster,
+            }
+        )
+
+    return total, results
+
+
+def search_newdeaf(
+    query: str,
+    content_type: str = "",
+    limit: int = 15,
+) -> dict:
+    query = (query or "").strip()
+    if len(query) < 2:
+        raise ValueError("Запрос должен быть не короче 2 символов")
+    if len(query) > 30:
+        query = query[:30]
+
+    limit = max(1, min(int(limit), 30))
+    content_type = (content_type or "").strip().lower()
+    if content_type and content_type not in NEWDEAF_CATEGORY_FROM_PATH:
+        raise ValueError("type должен быть serial, film, multfilm или anime")
+
+    search_query = urlencode(
+        {"do": "search", "subaction": "search", "story": query},
+        quote_via=quote,
+    )
+    last_error: Optional[Exception] = None
+    for day in _newdeaf_mirror_candidates():
+        mirror_base = current_newdeaf_base(day)
+        search_url = f"{mirror_base}/?{search_query}"
+        try:
+            page_html = _fetch_newdeaf_candidate(search_url)
+            break
+        except (urllib.error.URLError, SecurityError) as exc:
+            last_error = exc
+            page_html = ""
+    else:
+        if last_error:
+            raise last_error
+        raise urllib.error.URLError("Не удалось выполнить поиск на NewDeaf")
+
+    total, results = parse_search_results(page_html, mirror_base)
+    if content_type:
+        results = [item for item in results if item.get("category") == content_type]
+
+    return {
+        "query": query,
+        "mirror": mirror_base,
+        "dns": _newdeaf_dns_mode(),
+        "total": total,
+        "results": results[:limit],
+    }
 
 
 def fetch_binary(url: str, timeout: int = 30) -> Tuple[bytes, str]:
@@ -599,8 +931,15 @@ def build_player_entry(index: int, iframe_url: str) -> dict:
 
 
 def resolve_page(url: str) -> dict:
-    url = validate_page_url(url)
+    url = url.strip()
+    is_newdeaf = is_newdeaf_url(url)
+    if is_newdeaf:
+        url = rewrite_newdeaf_mirror(url)
+        _assert_newdeaf_target(url)
+    else:
+        url = validate_page_url(url)
     parsed = urlparse(url)
+    fetch_page = fetch_newdeaf_page if is_newdeaf else fetch_url
 
     # Прямая ссылка на embed-плеер
     if any(host in parsed.netloc for host in EMBED_HOSTS):
@@ -615,7 +954,7 @@ def resolve_page(url: str) -> dict:
             result.update(ref)
         return result
 
-    page_html = fetch_url(url)
+    page_html = fetch_page(url)
     iframe_urls = extract_players(page_html)
     if not iframe_urls:
         raise ValueError(
@@ -2002,6 +2341,27 @@ class SubLearnHandler(SimpleHTTPRequestHandler):
                 self._json_response(400, {"error": str(exc)})
             except urllib.error.URLError as exc:
                 self._json_response(502, {"error": f"Не удалось загрузить страницу: {exc.reason}"})
+            except Exception as exc:  # noqa: BLE001
+                self._json_response(500, {"error": str(exc)})
+            return
+        if parsed.path == "/api/search":
+            params = parse_qs(parsed.query)
+            query = (params.get("q") or params.get("query") or [""])[0].strip()
+            content_type = (params.get("type") or [""])[0].strip().lower()
+            try:
+                limit = int((params.get("limit") or ["15"])[0])
+            except ValueError:
+                limit = 15
+            if not query:
+                self._json_response(400, {"error": "Параметр q обязателен"})
+                return
+            try:
+                data = search_newdeaf(query, content_type, limit)
+                self._json_response(200, data)
+            except ValueError as exc:
+                self._json_response(400, {"error": str(exc)})
+            except urllib.error.URLError as exc:
+                self._json_response(502, {"error": f"Не удалось выполнить поиск: {exc.reason}"})
             except Exception as exc:  # noqa: BLE001
                 self._json_response(500, {"error": str(exc)})
             return

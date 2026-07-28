@@ -43,6 +43,9 @@ services:
     build: .
     ports:
       - "8765:8765"
+    dns:
+      - 1.1.1.1
+      - 8.8.8.8
     volumes:
       - vocab_data:/app/data
       - ./server.py:/app/server.py
@@ -59,6 +62,7 @@ services:
       SUBLEARN_HOST: 0.0.0.0
       SUBLEARN_PORT: "8765"
       SUBLEARN_DATA_DIR: /app/data
+      SUBLEARN_NEWDEAF_DNS: cloudflare
       # Тёплый idle 3м после AI/prefetch; Google — основной путь перевода.
       OLLAMA_KEEP_ALIVE: "3m"
     depends_on:
