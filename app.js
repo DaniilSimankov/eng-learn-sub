@@ -1677,6 +1677,11 @@ async function resolvePageUrl(options = {}) {
         state.selectedPlayer = data.players.find((p) => p.index === idx);
         playerPicker.querySelectorAll('.player-pick').forEach((b) => b.classList.remove('is-active'));
         btn.classList.add('is-active');
+        const fallbackEpisodeOptions = data.players.find(
+          (p) => Array.isArray(p.episodeOptions) && p.episodeOptions.length
+        )?.episodeOptions || [];
+        const selectedEpisodeUrl = state.selectedPlayer?.iframeUrl || data.sourceUrl || url;
+        setEpisodeOptions(state.selectedPlayer?.episodeOptions || fallbackEpisodeOptions, selectedEpisodeUrl);
         saveWatchSession({
           url,
           playerIndex: idx,
@@ -1690,19 +1695,18 @@ async function resolvePageUrl(options = {}) {
 
     resolvedInfo.classList.remove('hidden');
     if (Array.isArray(data.seriesOptions) && data.seriesOptions.length) {
-      const existingSeries = seriesOptions
-        ? Array.from(seriesOptions.querySelectorAll('.search-select__option'))
-          .map((btn) => ({ title: btn.dataset.title || btn.textContent?.trim() || '', url: btn.dataset.url || '' }))
-          .filter((item) => item.url)
-        : [];
-      const merged = [...existingSeries, ...data.seriesOptions].reduce((acc, item) => {
-        if (!acc.some((x) => x.url === item.url)) acc.push(item);
-        return acc;
-      }, []);
-      setSeriesOptions(merged, data.sourceUrl || url);
+      setSeriesOptions(data.seriesOptions, data.sourceUrl || url);
+    } else {
+      setSeriesOptions([{ title: data.title || url, url }], url);
     }
+    const fallbackEpisodeOptions = sorted.find(
+      (p) => Array.isArray(p.episodeOptions) && p.episodeOptions.length
+    )?.episodeOptions || [];
     const selectedEpisodeUrl = state.selectedPlayer?.iframeUrl || data.sourceUrl || url;
-    setEpisodeOptions(data.episodeOptions || [], selectedEpisodeUrl);
+    setEpisodeOptions(
+      state.selectedPlayer?.episodeOptions || fallbackEpisodeOptions || data.episodeOptions || [],
+      selectedEpisodeUrl
+    );
     if (data.ylitronId) {
       const ok = state.selectedPlayer?.streamUrl;
       setStatus(
